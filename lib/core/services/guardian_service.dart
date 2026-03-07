@@ -10,6 +10,14 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import '../models/guardian_state_model.dart';
 
+final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
+late SharedPreferences _prefs;
+late ServiceInstance _service;
+late GuardianState _state;
+late GuardianSettings _settings;
+late GuardianSession _session;
+late StreamSubscription<Position>? positionStream;
+
 @pragma('vm:entry-point')
 void notificationTapBackground(NotificationResponse notificationResponse) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,12 +36,14 @@ void notificationTapBackground(NotificationResponse notificationResponse) async 
   }
 }
 
+// This is called by the main process, and basically just gets things ready for running
+// and configures the notification channel required for persistence.
 Future<void> initializeGuardianService() async {
-  final service = FlutterBackgroundService();
-  final FlutterLocalNotificationsPlugin flip = FlutterLocalNotificationsPlugin();
+  _service = FlutterBackgroundService();
+  _prefs = await SharedPreferences.getInstance();
 
   const AndroidInitializationSettings androidSettings = AndroidInitializationSettings('ic_stat_app_icon');
-  await flip.initialize(
+  await _notifications.initialize(
     settings: const InitializationSettings(android: androidSettings),
     onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
   );
@@ -45,9 +55,9 @@ Future<void> initializeGuardianService() async {
     importance: Importance.low,
   );
 
-  await flip.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.createNotificationChannel(channel);
+  await _notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.createNotificationChannel(channel);
 
-  await service.configure(
+  await _service.configure(
     androidConfiguration: AndroidConfiguration(
       onStart: onStart,
       autoStart: false,
@@ -63,75 +73,49 @@ Future<void> initializeGuardianService() async {
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
-  bool isUrgentShowing = false;
-
   DartPluginRegistrant.ensureInitialized();
-  final prefs = await SharedPreferences.getInstance();
-  final FlutterLocalNotificationsPlugin flp = FlutterLocalNotificationsPlugin();
 
-  final state = GuardianStateModel();
-  
-  int minuteCounter = 0;
+  _service = service;
+  _prefs = await SharedPreferences.getInstance();
+
+  // Load the guardian settings
+  final settingsJson = _prefs.getString('guardian_settings');
+  if (settingsJson != null) {
+    _settings = GuardianSettings.fromMap(jsonDecode(settingsJson));
+  }
+
+  // Load the current session
+  final sessionJson = _prefs.getString('guardian_session');
+  if (sessionJson != null) {
+    _session = GuardianSession.fromMap(jsonDecode(sessionJson));
+  } else {
+    _session = GuardianSession(); // Start a fresh one if none exists
+  }
+
+  // Reconstruct the state, this is just used locally so doesn't matter too much but saves battery
+  _state = GuardianState(
+    startTime: DateTime.now(), // Or pull 'mission_start' from Session
+    targetTime: DateTime.parse(_settings.targetDepartureTime),
+  );
+
+  // Create listeners
   if (service is AndroidServiceInstance) {
     service.on('setAsForeground').listen((event) => service.setAsForegroundService());
-    service.on('setAsBackground').listen((event) => service.setAsBackgroundService());
   }
   
   service.on('stopService').listen((event) {
     service.stopSelf();
   });
 
+  // This one reports back to the UI TODO: probably should be session or perhaps both session and state
   service.on('request_state').listen((event) {
     service.invoke('updateUI', state.toMap());
   });
 
-   // --- WORKER 1: THE LOCATION STREAM (The Map) ---
-  double? homeLat = prefs.getDouble('home_lat');
-  double? homeLng = prefs.getDouble('home_lng');
-  StreamSubscription<Position>? positionStream;
+  _configureLocationServices();
+  
 
-  if (homeLat != null && homeLng != null) {
-    print("🛰️ [STREAM] Initializing radar stream...");
-    
-    // distanceFilter is the magic lag-killer. It only triggers if you move 10+ meters.
-    final locationSettings = AndroidSettings(
-      accuracy: LocationAccuracy.high,
-      distanceFilter: 50, 
-      foregroundNotificationConfig: const ForegroundNotificationConfig(
-        notificationText: "Guardian GPS Active",
-        notificationTitle: "True North",
-        enableWakeLock: true,
-      ),
-    );
-
-    positionStream = Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) async {
-      double distance = Geolocator.distanceBetween(position.latitude, position.longitude, homeLat, homeLng);
-
-      // Update the in-memory state object. No disk I/O here.
-      state.polled++;
-      state.distance = "${distance.toStringAsFixed(1)}m";
-
-      if (distance <= 150.0) {
-        if (!state.isHome) { // Check in-memory state
-          print("🏁 [STREAM] Target Acquired. Welcome Home.");
-          state.isHome = true;
-          await prefs.setBool('is_home', true);
-          
-          // --- THE FIX: RUN ARRIVAL LOGIC DIRECTLY ---
-          String landingMsg = prefs.getString('landing_message') ?? "Welcome home. The Guardian is standing down.";
-          await _sendArrivalNotification(landingMsg);
-          await prefs.setBool('show_arrival_popup', true);
-          
-          service.invoke('mission_accomplished');
-
-          await Future.delayed(const Duration(seconds: 10));
-          
-          service.stopSelf(); // Kill the background service
-          positionStream?.cancel(); // Kill the GPS stream
-        }
-      }
-    });
-  }
+  
 
   // --- WORKER 2: THE NAG LOOP (The Clock) ---
   // Notice there is ZERO GPS logic in here now! It just runs super fast and light.
@@ -297,20 +281,58 @@ Future<void> _sendGuiltNotification(String reason) async {
     notificationDetails: NotificationDetails(android: ad));
 }
 
+
+
+Future<void> _configureLocationServices() {
+  print("🛰️ [STREAM] Initializing radar stream...");
+  
+  final locationSettings = AndroidSettings(
+    accuracy: LocationAccuracy.high,
+    distanceFilter: 50, 
+    foregroundNotificationConfig: const ForegroundNotificationConfig(
+      notificationText: "Guardian GPS Active",
+      notificationTitle: "True North",
+      enableWakeLock: true,
+    ),
+  );
+
+  positionStream = Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) async {
+    double distance = Geolocator.distanceBetween(position.latitude, position.longitude, homeLat, homeLng);
+
+    _state.polled++;
+    _state.distance = distance;
+
+    if (_state.distance <= 150.0) {
+        print("🏁 [STREAM] Home Location Reached.");
+        state.isHome = true;
+
+        String landingMsg = _settings.homeReminderText ?? "Welcome home. The Guardian is standing down.";
+        await _sendArrivalNotification(landingMsg);
+        
+        service.invoke('mission_accomplished');
+        service.stopSelf(); // Kill the background service
+        positionStream?.cancel(); // Kill the GPS stream
+      }
+    }
+  });
+}
+
+// #region Notifications
+
 Future<void> _sendHydrationAlert(String message) async {
-  final FlutterLocalNotificationsPlugin flip = FlutterLocalNotificationsPlugin();
   AndroidNotificationDetails ad = const AndroidNotificationDetails(
     NotificationConstants.hydrationChannelId, NotificationConstants.hydrationChannelName,
     importance: Importance.high, priority: Priority.high, color: Color(0xFF0000FF), 
   );
-  await flip.show(id: NotificationConstants.hydrationId, title: "Hydration Break", body: message, notificationDetails: NotificationDetails(android: ad));
+  await _notifications.show(id: NotificationConstants.hydrationId, title: "Hydration Break", body: message, notificationDetails: NotificationDetails(android: ad));
 }
 
 Future<void> _sendArrivalNotification(String landingMsg) async {
-  final FlutterLocalNotificationsPlugin flip = FlutterLocalNotificationsPlugin();
   AndroidNotificationDetails ad = const AndroidNotificationDetails(
     NotificationConstants.arrivalChannelId, NotificationConstants.arrivalChannelName,
     importance: Importance.max, priority: Priority.high,
   );
-  await flip.show(id: NotificationConstants.arrivalId, title: "Safe Arrival", body: landingMsg, notificationDetails: NotificationDetails(android: ad));
+  await _notifications.show(id: NotificationConstants.arrivalId, title: "Safe Arrival", body: landingMsg, notificationDetails: NotificationDetails(android: ad));
 }
+
+// #endregion
