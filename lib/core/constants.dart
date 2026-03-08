@@ -19,4 +19,14 @@ class NotificationConstants {
   static const int hydrationId = 666;
   static const int arrivalId = 999;
   static const int persistentServiceId = 888;
+
+  // Notification Content
+  static const String guardianGpsNotificationText = "Guardian GPS Active";
+  static const String guardianGpsNotificationTitle = "True North";
+}
+
+class LocationConstants {
+  // Thresholds
+  static const double homeDistanceThreshold = 150.0;
+  static const int locationUpdateThreshold = 50; // Minimum distance change to trigger update
 }

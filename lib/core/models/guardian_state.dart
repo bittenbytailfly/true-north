@@ -1,6 +1,18 @@
+// This file defines the GuardianState class, which encapsulates the current state of the user's journey in the Guardian app. It includes information about the start time, target departure time, distance from home, and other relevant details. The class also provides methods for calculating progress and formatting distance and countdown text for display purposes.
 class GuardianState {
   final DateTime startTime; // When the user hit "Start"
   final DateTime targetTime; // The deadline
+  final double homeLat;
+  final double homeLng;
+  final String anchorReason;
+  final String homeReminderText;
+  bool isSnoozed;
+  int snoozeCount;
+  DateTime? lastSnoozeTime;
+  DateTime? lastUrgentAlertTime;
+  DateTime? lastNudgeAlertTime;
+  bool halfwayAlertSent;
+  bool almostTimeAlertSent;
   double distanceInMeters; 
   int polledCount;
   bool isHome;
@@ -8,9 +20,20 @@ class GuardianState {
   GuardianState({
     required this.startTime,
     required this.targetTime,
+    required this.homeLat,
+    required this.homeLng,
+    required this.anchorReason,
+    required this.homeReminderText,
     this.distanceInMeters = 0.0,
     this.polledCount = 0,
     this.isHome = false,
+    this.isSnoozed = false,
+    this.snoozeCount = 0,
+    this.lastSnoozeTime,
+    this.lastUrgentAlertTime,
+    this.lastNudgeAlertTime,
+    this.halfwayAlertSent = false,
+    this.almostTimeAlertSent = false,
   });
 
   // --- GETTERS ---
@@ -44,11 +67,30 @@ class GuardianState {
   }
 
   Map<String, dynamic> toMap() => {
-    'distanceText': distanceText,
-    'countdownText': countdownText,
-    'distanceRaw': distanceInMeters,
+    'startTime': startTime.toIso8601String(),
+    'targetTime': targetTime.toIso8601String(),
+    'homeLat': homeLat,
+    'homeLng': homeLng,
+    'anchorReason': anchorReason,
+    'homeReminderText': homeReminderText,
+    'isSnoozed': isSnoozed,
+    'distanceInMeters': distanceInMeters,
     'polledCount': polledCount,
     'isHome': isHome,
-    'progress': progressFactor, 
   };
+
+  factory GuardianState.fromMap(Map<String, dynamic> map) {
+    return GuardianState(
+      startTime: DateTime.parse(map['startTime']),
+      targetTime: DateTime.parse(map['targetTime']),
+      homeLat: (map['homeLat'] as num).toDouble(),
+      homeLng: (map['homeLng'] as num).toDouble(),
+      anchorReason: map['anchorReason'] as String,
+      homeReminderText: map['homeReminderText'] as String,
+      isSnoozed: map['isSnoozed'] as bool? ?? false,
+      distanceInMeters: (map['distanceInMeters'] as num?)?.toDouble() ?? 0.0,
+      polledCount: map['polledCount'] as int? ?? 0,
+      isHome: map['isHome'] as bool? ?? false,
+    );
+  }
 }

@@ -1,20 +1,21 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../constants.dart'; 
+import 'package:true_north/core/constants.dart';
+import 'package:true_north/core/models/guardian_session.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import '../models/guardian_state_model.dart';
+import 'package:true_north/core/models/guardian_state.dart';
 
 final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
 late SharedPreferences _prefs;
 late ServiceInstance _service;
 late GuardianState _state;
-late GuardianSettings _settings;
 late GuardianSession _session;
 late StreamSubscription<Position>? positionStream;
 
@@ -39,8 +40,7 @@ void notificationTapBackground(NotificationResponse notificationResponse) async 
 // This is called by the main process, and basically just gets things ready for running
 // and configures the notification channel required for persistence.
 Future<void> initializeGuardianService() async {
-  _service = FlutterBackgroundService();
-  _prefs = await SharedPreferences.getInstance();
+  final service = FlutterBackgroundService();
 
   const AndroidInitializationSettings androidSettings = AndroidInitializationSettings('ic_stat_app_icon');
   await _notifications.initialize(
@@ -57,7 +57,7 @@ Future<void> initializeGuardianService() async {
 
   await _notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.createNotificationChannel(channel);
 
-  await _service.configure(
+  await service.configure(
     androidConfiguration: AndroidConfiguration(
       onStart: onStart,
       autoStart: false,
@@ -78,24 +78,35 @@ void onStart(ServiceInstance service) async {
   _service = service;
   _prefs = await SharedPreferences.getInstance();
 
-  // Load the guardian settings
-  final settingsJson = _prefs.getString('guardian_settings');
-  if (settingsJson != null) {
-    _settings = GuardianSettings.fromMap(jsonDecode(settingsJson));
-  }
-
   // Load the current session
   final sessionJson = _prefs.getString('guardian_session');
-  if (sessionJson != null) {
+
+  if (sessionJson == null) {
+    print("🚨 [CRITICAL] Guardian started with NO SESSION data. Aborting mission.");
+    service.invoke('error', {'message': 'Mission parameters missing'});
+    
+    // Kill the service immediately so it doesn't sit there doing nothing
+    service.stopSelf(); 
+    return; 
+  }
+
+  // If we got here, we are safe to "Hydrate"
+  try {
     _session = GuardianSession.fromMap(jsonDecode(sessionJson));
-  } else {
-    _session = GuardianSession(); // Start a fresh one if none exists
+  } catch (e) {
+    print("🚨 [CRITICAL] Session data corrupted: $sessionJson");
+    service.stopSelf();
+    return;
   }
 
   // Reconstruct the state, this is just used locally so doesn't matter too much but saves battery
   _state = GuardianState(
     startTime: DateTime.now(), // Or pull 'mission_start' from Session
-    targetTime: DateTime.parse(_settings.targetDepartureTime),
+    targetTime: _session.targetDepartureTime,
+    homeLat: _session.homeLat,
+    homeLng: _session.homeLng,
+    anchorReason: _session.anchorReason,
+    homeReminderText: _session.homeReminderText,
   );
 
   // Create listeners
@@ -109,49 +120,44 @@ void onStart(ServiceInstance service) async {
 
   // This one reports back to the UI TODO: probably should be session or perhaps both session and state
   service.on('request_state').listen((event) {
-    service.invoke('updateUI', state.toMap());
+    service.invoke('updateUI', _state.toMap());
   });
 
   _configureLocationServices();
-  
+  _configureTimedAlerts();
+}
 
-  
+Future<void> _configureTimedAlerts() async {
 
-  // --- WORKER 2: THE NAG LOOP (The Clock) ---
-  // Notice there is ZERO GPS logic in here now! It just runs super fast and light.
   Timer.periodic(const Duration(seconds: 15), (timer) async {
-    await prefs.reload();
-    minuteCounter++; 
-    
-    String? targetStr = prefs.getString('target_departure_time');
-    if (targetStr == null) return;
-
     DateTime now = DateTime.now();
-    DateTime targetTime = DateTime.parse(targetStr);
+    DateTime targetTime = _state.targetTime;
     bool isPastDeadline = now.isAfter(targetTime);
     
     // --- SNOOZE WAKE-UP LOGIC ---
-    if (state.isSnoozed && state.snoozeStartTime != null) {
-      if (now.difference(state.snoozeStartTime!).inMinutes >= 5) {
-        state.isSnoozed = false;
-        state.snoozeStartTime = null;
-        // Also clear from prefs in case service is killed
-        await prefs.setBool('is_snoozed', false);
-        await prefs.remove('snooze_start_time');
+    if (_session.isSnoozed && _session.lastSnoozeTime != null) {
+      if (now.difference(_session.lastSnoozeTime!).inMinutes >= 5) {
+        _session.isSnoozed = false;
+        _session.lastSnoozeTime = null;
+
+        String updatedJson = jsonEncode(_session.toMap());
+        await _prefs.setString('guardian_session_key', updatedJson);
+        
+        print("💾 [SNOOZE] Session auto-expiry committed to disk.");
       }
     }
 
     // --- UPDATE PERSISTENT BACKGROUND BAR ---
     Duration diff = targetTime.difference(now);
+
     String countdownText = isPastDeadline 
         ? "LATE by ${diff.inMinutes.abs()}m" 
-        : "Leave in: ${diff.inHours}h ${diff.inMinutes % 60}m - polled: ${state.polled}, distance: ${state.distance}";
+        : "Leave in: ${diff.inHours}h ${diff.inMinutes % 60}m (${_state.distanceText})";
 
-    if (service is AndroidServiceInstance) {
+    if (_service is AndroidServiceInstance) {
       int currentProgress = 0;
-      String? activationStr = prefs.getString('activation_time');
-      if (activationStr != null && !isPastDeadline) {
-        DateTime activationTime = DateTime.parse(activationStr);
+      if (!isPastDeadline) {
+        DateTime activationTime = _state.startTime;
         int totalSeconds = targetTime.difference(activationTime).inSeconds;
         int elapsedSeconds = now.difference(activationTime).inSeconds;
         if (totalSeconds > 0) currentProgress = ((elapsedSeconds / totalSeconds) * 100).toInt().clamp(0, 100);
@@ -159,7 +165,7 @@ void onStart(ServiceInstance service) async {
         currentProgress = 100; 
       }
 
-      await flp.show(
+      await _notifications.show(
         id: NotificationConstants.persistentServiceId,
         title: "Guardian Active • $countdownText",
         body: isPastDeadline ? "⚠️ MISSION CRITICAL" : "Watching your back.",
@@ -182,85 +188,23 @@ void onStart(ServiceInstance service) async {
       );
     }
 
-    // Update UI-specific fields in the model before sending
-    state.targetDepartureTime = targetStr;
-    state.countdownText = countdownText;
+    if (isPastDeadline && !_session.isSnoozed && (_session.lastUrgentAlertTime == null || now.difference(_session.lastUrgentAlertTime!).inMinutes >= 1)) {
+      await _sendUrgencyAlert();
+      _session.lastUrgentAlertTime = now;
+    }    
 
-    // Send current state to the UI
-    service.invoke('updateUI', state.toMap());
-
-    // --- URGENCY AND NAG LOGIC ---
-    if (isPastDeadline && !state.isHome) {
-      if (!state.isSnoozed) {
-        if (!isUrgentShowing || minuteCounter % 4 == 0) { 
-          await _sendUrgencyAlert();
-          isUrgentShowing = true; 
-        }
-
-        // THE SILENT BUZZER
-        final Int64List vibrationPattern = Int64List.fromList([0, 500, 100, 500, 100, 1000]);
-        await flp.show(
-          id: NotificationConstants.urgentId + 1, title:null, body:null,
-          notificationDetails: NotificationDetails(android: AndroidNotificationDetails(
-              NotificationConstants.urgentChannelId, NotificationConstants.urgentChannelName,
-              importance: Importance.low, priority: Priority.low,
-              vibrationPattern: vibrationPattern, enableVibration: true, onlyAlertOnce: false, 
-          )),
-        );
-      } else {
-        isUrgentShowing = false; 
-      }
-    } else if (isPastDeadline && state.isHome) {
-      service.invoke('mission_accomplished');
-        service.stopSelf();
-        timer.cancel();
-        positionStream?.cancel();
-    }
-    
     // --- HYDRATION ---
-    if (!isPastDeadline && (minuteCounter % 240 == 0)) {
+    // TODO: Ths won't fire as lastNudge will be null initially, I'll sort shortly
+    if (!isPastDeadline && _session.lastNudgeAlertTime != null && now.difference(_session.lastNudgeAlertTime!).inMinutes >= 30) {
        await _sendHydrationAlert("Tactical water break. 💧");
     }
+
+    // Send current state to the UI
+    _service.invoke('updateUI', _state.toMap());
   });
 }
 
-// Updated Alert (No distance required)
-Future<void> _sendUrgencyAlert() async {
-  final FlutterLocalNotificationsPlugin flip = FlutterLocalNotificationsPlugin();
-  
-  AndroidNotificationDetails ad = const AndroidNotificationDetails(
-    NotificationConstants.urgentChannelId, 
-    NotificationConstants.urgentChannelName,
-    importance: Importance.max, 
-    priority: Priority.high,
-    ongoing: true,
-    autoCancel: false,
-    fullScreenIntent: true,
-    audioAttributesUsage: AudioAttributesUsage.alarm, 
-    category: AndroidNotificationCategory.alarm,
-    // --- FIX 3: FORCE EXPANDED VIEW TO SHOW BUTTONS ---
-    styleInformation: BigTextStyleInformation(
-      "Departure time exceeded. Stand down or Move out.",
-      htmlFormatBigText: true,
-      contentTitle: "<b>MISSION CRITICAL</b>",
-      htmlFormatContentTitle: true,
-    ),
-    actions: <AndroidNotificationAction>[
-      AndroidNotificationAction(
-        'snooze_guilt', 
-        'SNOOZE (5M)', 
-        cancelNotification: true, 
-      ),
-    ],
-  );
-  
-  await flip.show(
-    id: NotificationConstants.urgentId, 
-    title: "MISSION CRITICAL: Time to Move.", 
-    body: "Departure time exceeded.", 
-    notificationDetails: NotificationDetails(android: ad)
-  );
-}
+
 
 // ... rest of your helper methods (_sendGuiltNotification, _sendHydrationAlert, _sendArrivalNotification) stay the same ...
 
@@ -281,9 +225,7 @@ Future<void> _sendGuiltNotification(String reason) async {
     notificationDetails: NotificationDetails(android: ad));
 }
 
-
-
-Future<void> _configureLocationServices() {
+Future<void> _configureLocationServices() async {
   print("🛰️ [STREAM] Initializing radar stream...");
   
   final locationSettings = AndroidSettings(
@@ -297,27 +239,26 @@ Future<void> _configureLocationServices() {
   );
 
   positionStream = Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) async {
-    double distance = Geolocator.distanceBetween(position.latitude, position.longitude, homeLat, homeLng);
+    double distance = Geolocator.distanceBetween(position.latitude, position.longitude, _state.homeLat, _state.homeLng);
 
-    _state.polled++;
-    _state.distance = distance;
+    _state.polledCount++;
+    _state.distanceInMeters = distance;
 
-    if (_state.distance <= 150.0) {
+    if (_state.distanceInMeters <= 150.0) {
         print("🏁 [STREAM] Home Location Reached.");
-        state.isHome = true;
 
-        String landingMsg = _settings.homeReminderText ?? "Welcome home. The Guardian is standing down.";
+        String landingMsg = _state.homeReminderText;
         await _sendArrivalNotification(landingMsg);
         
-        service.invoke('mission_accomplished');
-        service.stopSelf(); // Kill the background service
+        _service.invoke('mission_accomplished');
+        _service.stopSelf(); // Kill the background service
         positionStream?.cancel(); // Kill the GPS stream
       }
     }
-  });
+  );
 }
 
-// #region Notifications
+//#region Notifications
 
 Future<void> _sendHydrationAlert(String message) async {
   AndroidNotificationDetails ad = const AndroidNotificationDetails(
@@ -325,6 +266,45 @@ Future<void> _sendHydrationAlert(String message) async {
     importance: Importance.high, priority: Priority.high, color: Color(0xFF0000FF), 
   );
   await _notifications.show(id: NotificationConstants.hydrationId, title: "Hydration Break", body: message, notificationDetails: NotificationDetails(android: ad));
+}
+
+Future<void> _sendUrgencyAlert() async {
+  final Int64List vibrationPattern = Int64List.fromList([0, 500, 100, 500, 100, 1000]);
+  
+  AndroidNotificationDetails ad = AndroidNotificationDetails(
+    NotificationConstants.urgentChannelId, 
+    NotificationConstants.urgentChannelName,
+    importance: Importance.max, 
+    priority: Priority.high,
+    ongoing: true,
+    autoCancel: false,
+    fullScreenIntent: true,
+    audioAttributesUsage: AudioAttributesUsage.alarm, 
+    category: AndroidNotificationCategory.alarm,
+    // --- FIX 3: FORCE EXPANDED VIEW TO SHOW BUTTONS ---
+    styleInformation: BigTextStyleInformation(
+      "Departure time exceeded. Stand down or Move out.",
+      htmlFormatBigText: true,
+      contentTitle: "<b>MISSION CRITICAL</b>",
+      htmlFormatContentTitle: true,
+    ),
+    vibrationPattern: vibrationPattern,
+    enableVibration: true,
+    actions: <AndroidNotificationAction>[
+      AndroidNotificationAction(
+        'snooze_guilt', 
+        'SNOOZE (5M)', 
+        cancelNotification: true, 
+      ),
+    ],
+  );
+  
+  await _notifications.show(
+    id: NotificationConstants.urgentId, 
+    title: "MISSION CRITICAL: Time to Move.", 
+    body: "Departure time exceeded.", 
+    notificationDetails: NotificationDetails(android: ad)
+  );
 }
 
 Future<void> _sendArrivalNotification(String landingMsg) async {
@@ -335,4 +315,4 @@ Future<void> _sendArrivalNotification(String landingMsg) async {
   await _notifications.show(id: NotificationConstants.arrivalId, title: "Safe Arrival", body: landingMsg, notificationDetails: NotificationDetails(android: ad));
 }
 
-// #endregion
+//#endregion

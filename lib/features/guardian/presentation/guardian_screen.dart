@@ -1,10 +1,13 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:true_north/core/models/guardian_state_model.dart';
+import 'package:true_north/core/models/guardian_session.dart';
+import 'package:true_north/core/models/guardian_state.dart';
 
 class GuardianScreen extends StatefulWidget {
   const GuardianScreen({super.key});
@@ -16,7 +19,7 @@ class GuardianScreen extends StatefulWidget {
 class _GuardianScreenState extends State<GuardianScreen> {
   bool isGuardianActive = false;
   bool _isValidating = false;
-  GuardianStateModel? _guardianState;
+  GuardianState? _guardianState;
 
   // Dedicated controllers - these are the ONLY source of truth for text
   final TextEditingController _homeController = TextEditingController();
@@ -47,7 +50,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
     service.on('updateUI').listen((event) {
       if (event != null && mounted) {
         setState(() {
-          _guardianState = GuardianStateModel.fromMap(event);
+          _guardianState = GuardianState.fromMap(event);
           isGuardianActive = true;
         });
       }
@@ -142,36 +145,41 @@ class _GuardianScreenState extends State<GuardianScreen> {
 
   void _activateGuardian() async {
     final prefs = await SharedPreferences.getInstance();
+    final now = DateTime.now();
     
-    DateTime now = DateTime.now();
+    // 1. Calculate the target time (your logic is solid here)
     DateTime targetDateTime = DateTime(
       now.year, now.month, now.day, 
       _leaveTime.hour, _leaveTime.minute
     );
-
-    // If the time selected has already passed today, it must be for the next day
     if (targetDateTime.isBefore(now)) {
       targetDateTime = targetDateTime.add(const Duration(days: 1));
     }
 
-    if (_homePoint != null) {
-      await prefs.setDouble('home_lat', _homePoint!.latitude);
-      await prefs.setDouble('home_lng', _homePoint!.longitude);
-    }
-    
-    await prefs.setString('target_departure_time', targetDateTime.toIso8601String());
-    await prefs.setBool('hydration_on', _hydrationEnabled);
-    await prefs.setString('anchor_reason', _anchorController.text.isNotEmpty ? _anchorController.text : "you need to be sharp tomorrow");
-    await prefs.setString('landing_message', _landingController.text.isNotEmpty ? _landingController.text : "Welcome home. The Guardian is standing down.");
-    await prefs.setBool('is_snoozed', false);
-    await prefs.setString('activation_time', DateTime.now().toIso8601String());
+    // 2. Create the "Source of Truth" Object
+    // We use your GuardianSession model to hold everything in one container
+    final session = GuardianSession(
+      activationTime: now,
+      targetDepartureTime: targetDateTime,
+      homeLat: _homePoint!.latitude,
+      homeLng: _homePoint!.longitude,
+      anchorReason: _anchorController.text.isNotEmpty ? _anchorController.text : "you need to be sharp tomorrow",
+      homeReminderText: _landingController.text.isNotEmpty ? _landingController.text : "Welcome home. The Guardian is standing down."
+    );
 
+    // 3. Save as ONE single JSON string
+    // This is the "Briefing Document" we talked about
+    await prefs.setString('guardian_session', jsonEncode(session.toMap()));
+
+    // 4. Update UI State & Close Panel
     if (!context.mounted) return;
     Navigator.pop(context); 
     setState(() => isGuardianActive = true);
 
-    await FlutterBackgroundService().startService();
-    FlutterBackgroundService().invoke('setAsForeground');
+    // 5. Start the Engine
+    final service = FlutterBackgroundService();
+    await service.startService();
+    service.invoke('setAsForeground');
   }
 
   Future<void> _showBackgroundRationaleDialog() async {
