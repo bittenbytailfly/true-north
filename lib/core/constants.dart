@@ -30,3 +30,18 @@ class LocationConstants {
   static const double homeDistanceThreshold = 150.0;
   static const int locationUpdateThreshold = 50; // Minimum distance change to trigger update
 }
+
+class GuardianMessages {
+  static const List<String> nudges = [
+    "Remember to take it slow - it's not a race! 🐢",
+    "Consider switching to a non-alcoholic drink next round. 💧",
+    "Tactical water break? Your future self will thank you.",
+    "The Guardian says: Check your pace. You're doing great.",
+    "Stay sharp. How's that water level looking? 🌊",
+    "Pacing is power. Take a breather.",
+    "Halfway through a drink? Grab a glass of water now.",
+    "Eyes on the prize: A clear head tomorrow morning. ☀️",
+    "Don't let the momentum run away with you. Slow it down.",
+    "Checking in: Are you sticking to the plan? You've got this.",
+  ];
+}

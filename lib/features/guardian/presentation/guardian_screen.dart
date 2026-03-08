@@ -7,7 +7,6 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:true_north/core/models/guardian_session.dart';
-import 'package:true_north/core/models/guardian_state.dart';
 
 class GuardianScreen extends StatefulWidget {
   const GuardianScreen({super.key});
@@ -19,7 +18,7 @@ class GuardianScreen extends StatefulWidget {
 class _GuardianScreenState extends State<GuardianScreen> {
   bool isGuardianActive = false;
   bool _isValidating = false;
-  GuardianState? _guardianState;
+  GuardianSession? _guardianSession;
 
   // Dedicated controllers - these are the ONLY source of truth for text
   final TextEditingController _homeController = TextEditingController();
@@ -50,18 +49,8 @@ class _GuardianScreenState extends State<GuardianScreen> {
     service.on('updateUI').listen((event) {
       if (event != null && mounted) {
         setState(() {
-          _guardianState = GuardianState.fromMap(event);
+          _guardianSession = GuardianSession.fromMap(event);
           isGuardianActive = true;
-        });
-      }
-    });
-
-    // 3. Listen for completion
-    service.on('mission_accomplished').listen((event) {
-      if (mounted) {
-        setState(() {
-          isGuardianActive = false; // This instantly updates your button/UI
-          _guardianState = null;
         });
       }
     });
@@ -446,11 +435,11 @@ class _GuardianScreenState extends State<GuardianScreen> {
               ),
             ),
             const SizedBox(height: 40),
-            if (isGuardianActive && _guardianState != null)
+            if (isGuardianActive && _guardianSession != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: Text(
-                  _guardianState!.countdownText,
+                  _guardianSession!.countdownText,
                   style: const TextStyle(color: Color(0xFFFFD700), fontSize: 16, fontWeight: FontWeight.w500),
                 ),
               ),
