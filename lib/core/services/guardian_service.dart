@@ -137,13 +137,20 @@ Future<void> _configureTimedAlerts() async {
 
     await _showPersistentNotification(targetTime, now, isPastDeadline);
 
-    if (isUrgencyAlertDue(isPastDeadline, now)) {
+    if (_isUrgencyAlertDue(isPastDeadline, now)) {
       await _sendUrgencyAlert();
-      _session.lastUrgentAlertTime = now;
     }    
 
     if (_isNudgeMessageOverdue(isPastDeadline, now)) {
        await _sendNudgeAlert();
+    }
+
+    if (_isHalfwayThrough) {
+      await _sendHalfwayNotification();
+    }
+
+    if (_isAlmostTime) {
+      await _sendAlmostTimeNotification();
     }
 
     // Send current state to the UI
@@ -151,8 +158,20 @@ Future<void> _configureTimedAlerts() async {
   });
 }
 
-bool isUrgencyAlertDue(bool isPastDeadline, DateTime now) => isPastDeadline && !_session.isSnoozed && (_session.lastUrgentAlertTime == null || now.difference(_session.lastUrgentAlertTime!).inMinutes >= 1);
+//#region Helpers
+
+bool _isUrgencyAlertDue(bool isPastDeadline, DateTime now) => isPastDeadline && !_session.isSnoozed && (_session.lastUrgentAlertTime == null || now.difference(_session.lastUrgentAlertTime!).inMinutes >= 1);
 bool _isNudgeMessageOverdue(bool isPastDeadline, DateTime now) => !isPastDeadline && now.difference(_session.lastNudgeAlertTime ?? _session.activationTime).inMinutes >= _session.minutesToNextNudge;
+bool get _isHalfwayThrough => _session.progressFactor >= 0.5 && !_session.halfwayAlertSent;
+bool get _isAlmostTime => _session.progressFactor >= 0.9 && !_session.almostTimeAlertSent;
+
+Future<void> _updateSessionAndNotifyUI() async {
+  String updatedJson = jsonEncode(_session.toMap());
+  await _prefs.setString('guardian_session_key', updatedJson);
+  _service.invoke('updateUI', _session.toMap());
+}
+
+//#endregion
 
 Future<void> _sendGuiltNotification(String reason) async {
   final FlutterLocalNotificationsPlugin flip = FlutterLocalNotificationsPlugin();
@@ -254,7 +273,6 @@ Future<void> _sendNudgeAlert() async {
   final random = Random();
   final String randomMessage = GuardianMessages.nudges[random.nextInt(GuardianMessages.nudges.length)];
 
-  // 2. Build the notification (Note: removed 'const' as we are using a dynamic variable)
   AndroidNotificationDetails ad = AndroidNotificationDetails(
     NotificationConstants.hydrationChannelId, 
     NotificationConstants.hydrationChannelName,
@@ -276,6 +294,58 @@ Future<void> _sendNudgeAlert() async {
   _session.minutesToNextNudge = _session.getMinutesToNextNudge();
   String updatedJson = jsonEncode(_session.toMap());
   await _prefs.setString('guardian_session_key', updatedJson);
+}
+
+Future<void> _sendHalfwayNotification() async {
+  // 1. Pick a random message
+  final random = Random();
+  final String randomMessage = GuardianMessages.halfwayNudges[random.nextInt(GuardianMessages.halfwayNudges.length)];
+
+  AndroidNotificationDetails ad = AndroidNotificationDetails(
+    NotificationConstants.hydrationChannelId, 
+    NotificationConstants.hydrationChannelName,
+    importance: Importance.high, 
+    priority: Priority.high, 
+    icon: 'ic_stat_app_icon',
+    color: const Color(0xFF4CAF50),
+  );
+
+  await _notifications.show(
+    id: NotificationConstants.hydrationId, 
+    title: "Halfway There!",
+    body: randomMessage, 
+    notificationDetails: NotificationDetails(android: ad)
+  );
+
+  // 3. Update the last nudge time and calculate next nudge timing
+  _session.halfwayAlertSent = true;
+  _updateSessionAndNotifyUI();
+}
+
+Future<void> _sendAlmostTimeNotification() async {
+  // 1. Pick a random message
+  final random = Random();
+  final String randomMessage = GuardianMessages.almostTimeNudges[random.nextInt(GuardianMessages.almostTimeNudges.length)];
+
+  AndroidNotificationDetails ad = AndroidNotificationDetails(
+    NotificationConstants.hydrationChannelId, 
+    NotificationConstants.hydrationChannelName,
+    importance: Importance.high, 
+    priority: Priority.high, 
+    icon: 'ic_stat_app_icon',
+    color: const Color(0xFF4CAF50),
+  );
+
+  await _notifications.show(
+    id: NotificationConstants.hydrationId, 
+    title: "Almost Time to Leave ...",
+    body: randomMessage, 
+    notificationDetails: NotificationDetails(android: ad)
+  );
+
+  // 3. Update the last nudge time and calculate next nudge timing
+  _session.halfwayAlertSent = true;
+  _updateSessionAndNotifyUI();
 }
 
 Future<void> _sendUrgencyAlert() async {
@@ -317,8 +387,7 @@ Future<void> _sendUrgencyAlert() async {
   );
 
   _session.lastUrgentAlertTime = DateTime.now();
-  String updatedJson = jsonEncode(_session.toMap());
-  await _prefs.setString('guardian_session_key', updatedJson);
+  _updateSessionAndNotifyUI();
 }
 
 Future<void> _sendArrivalNotification(String landingMsg) async {

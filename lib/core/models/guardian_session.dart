@@ -69,7 +69,6 @@ class GuardianSession {
   /// Randomized nudge timing between 30 and 90 minutes
   int getMinutesToNextNudge() {
     final random = Random();
-    return 1;
     return random.nextInt(61) + 30;
   }
 
