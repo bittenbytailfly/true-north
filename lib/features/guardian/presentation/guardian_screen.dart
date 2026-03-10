@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
@@ -16,12 +17,17 @@ class GuardianScreen extends StatefulWidget {
   State<GuardianScreen> createState() => _GuardianScreenState();
 }
 
-class _GuardianScreenState extends State<GuardianScreen> {
+// 1. ADDED MIXIN: SingleTickerProviderStateMixin is required for animations
+class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProviderStateMixin {
   bool isGuardianActive = false;
   bool _isValidating = false;
   GuardianSession? _guardianSession;
+  Timer? _uiClockTimer;
 
-  // Dedicated controllers - these are the ONLY source of truth for text
+  // 2. ADDED ANIMATION VARIABLES
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
+
   final TextEditingController _homeController = TextEditingController();
   final TextEditingController _anchorController = TextEditingController();
   final TextEditingController _landingController = TextEditingController();
@@ -33,36 +39,49 @@ class _GuardianScreenState extends State<GuardianScreen> {
   @override
   void initState() {
     super.initState();
+    
+    // 3. INITIALIZE THE ANIMATION
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 2), // A slow, calm breathing pace
+    );
+    
+    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.15).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+
     _checkArrivalStatus();
     _setupServiceConnection();
+    
+    _uiClockTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (isGuardianActive && _guardianSession != null && mounted) {
+        setState(() {}); 
+      }
+    });
   }
 
   void _setupServiceConnection() async {
     final service = FlutterBackgroundService();
     
-    // 1. Check if already running and ask for state
     if (await service.isRunning()) {
-      setState(() => isGuardianActive = true);
+      setState(() {
+        isGuardianActive = true;
+        _pulseController.repeat(reverse: true); // Start pulse if already running
+      });
       service.invoke('request_state');
     }
 
-    // 2. Listen for real-time updates
     service.on('updateUI').listen((event) {
       if (event != null && mounted) {
-        print("📡 [UI] Received update from service!"); // <-- Add this to prove it's alive
-
         try {
-          // SAFE CAST: Forces the dynamic map into the exact format fromMap needs
           final safeMap = Map<String, dynamic>.from(event);
-          
-print(event);
-
           setState(() {
             _guardianSession = GuardianSession.fromMap(safeMap);
             isGuardianActive = true;
+            if (!_pulseController.isAnimating) _pulseController.repeat(reverse: true);
           });
         } catch (e) {
-          print("🚨 [UI] Failed to parse session data: $e"); // <-- Catches any missing keys
+          print("🚨 [UI] Failed to parse session data: $e"); 
         }
       }
     });
@@ -70,6 +89,8 @@ print(event);
 
   @override
   void dispose() {
+    _pulseController.dispose(); // 4. CLEANUP ANIMATION
+    _uiClockTimer?.cancel();
     _homeController.dispose();
     _anchorController.dispose();
     _landingController.dispose();
@@ -113,17 +134,11 @@ print(event);
     );
   }
 
-  // THE NEW, STRICT POSTCODE VALIDATOR
   Future<bool> _isPostcodeValid(String address) async {
     String cleanAddress = address.trim().toUpperCase();
-
-    // 1. Strict RegEx check for UK Postcodes
     final RegExp ukPostcodeRegex = RegExp(r"^[A-Z]{1,2}\d[A-Z\d]? ?\d[A-Z]{2}$");
-    if (!ukPostcodeRegex.hasMatch(cleanAddress)) {
-      return false; 
-    }
+    if (!ukPostcodeRegex.hasMatch(cleanAddress)) return false; 
 
-    // 2. Network Geocoding Check
     try {
       List<Location> locations = await locationFromAddress("$cleanAddress, UK")
           .timeout(const Duration(seconds: 5));
@@ -146,17 +161,9 @@ print(event);
 
   void _activateGuardian() async {
     final now = DateTime.now();
-    
-    // 1. Calculate the target time
-    DateTime targetDateTime = DateTime(
-      now.year, now.month, now.day, 
-      _leaveTime.hour, _leaveTime.minute
-    );
-    if (targetDateTime.isBefore(now)) {
-      targetDateTime = targetDateTime.add(const Duration(days: 1));
-    }
+    DateTime targetDateTime = DateTime(now.year, now.month, now.day, _leaveTime.hour, _leaveTime.minute);
+    if (targetDateTime.isBefore(now)) targetDateTime = targetDateTime.add(const Duration(days: 1));
 
-    // 2. Create the "Source of Truth" Object
     final session = GuardianSession(
       activationTime: now,
       targetDepartureTime: targetDateTime,
@@ -166,18 +173,16 @@ print(event);
       homeReminderText: _landingController.text.isNotEmpty ? _landingController.text : "Welcome home. The Guardian is standing down."
     );
 
-    // 3. Save to Repository
     await SessionRepository().saveSession(session);
 
-    // 4. Update UI State & Close Panel
     if (!context.mounted) return;
     Navigator.pop(context); 
     setState(() {
       isGuardianActive = true;
       _guardianSession = session;
+      _pulseController.repeat(reverse: true); // 5. START PULSE
     });
 
-    // 5. Start the Engine
     final service = FlutterBackgroundService();
     await service.startService();
     service.invoke('setAsForeground');
@@ -187,9 +192,9 @@ print(event);
     setState(() {
       isGuardianActive = false;
       _guardianSession = null;
+      _pulseController.reset(); // 6. STOP PULSE
     });
     
-    // Clear data so it doesn't resume on next app open
     await SessionRepository().clearSession();
     FlutterBackgroundService().invoke('stopService');
   }
@@ -233,7 +238,6 @@ print(event);
 
   void _showPreFlightChecklist() {
     String errorMessage = ''; 
-
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1E1E3F),
@@ -411,6 +415,129 @@ print(event);
     );
   }
 
+  // --- MODULAR UI WIDGETS ---
+
+  Widget _buildTacticalShield() {
+    double progress = _guardianSession?.progressFactor ?? 0.0;
+    
+    return GestureDetector(
+      onTap: () {
+        if (!isGuardianActive) _showPreFlightChecklist();
+      },
+      onLongPress: () {
+        if (isGuardianActive) _showStandDownDialog();
+      },
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          if (isGuardianActive)
+            Container(
+              width: 260,
+              height: 260,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFFFFD700).withOpacity(0.08),
+                    blurRadius: 80,
+                    spreadRadius: 20,
+                  ),
+                ],
+              ),
+            ),
+            
+          if (isGuardianActive)
+            SizedBox(
+              width: 250,
+              height: 250,
+              child: CircularProgressIndicator(
+                value: progress,
+                strokeWidth: 3,
+                backgroundColor: Colors.white.withOpacity(0.05),
+                valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFFFD700)),
+              ),
+            ),
+
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 600),
+            curve: Curves.easeOutCirc,
+            width: 200,
+            height: 200,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: isGuardianActive ? const Color(0xFF1E1E3F) : Colors.transparent,
+              border: Border.all(
+                color: isGuardianActive ? const Color(0xFFFFD700) : Colors.white10,
+                width: 1.5,
+              ),
+            ),
+            // 7. IMPLEMENTED SCALETRANSITION AROUND THE ICON
+            child: ScaleTransition(
+              scale: isGuardianActive ? _pulseAnimation : const AlwaysStoppedAnimation(1.0),
+              child: Icon(
+                isGuardianActive ? Icons.shield : Icons.shield_outlined,
+                size: 80,
+                color: isGuardianActive ? const Color(0xFFFFD700) : Colors.white10,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActiveReadouts() {
+    return Column(
+      children: [
+        Text(
+          _guardianSession!.countdownText,
+          style: const TextStyle(
+            color: Color(0xFFFFD700),
+            fontSize: 48,
+            fontWeight: FontWeight.w900, 
+            letterSpacing: 2,
+          ),
+        ),
+        const SizedBox(height: 12),
+        
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: Colors.white10),
+            color: Colors.black12,
+          ),
+          child: Text(
+            "DISTANCE: ${_guardianSession!.distanceText.toUpperCase()}",
+            style: const TextStyle(
+              color: Colors.white54,
+              fontSize: 11,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 2,
+            ),
+          ),
+        ),
+        
+        const SizedBox(height: 40),
+        const Text(
+          "HOLD SHIELD TO STAND DOWN",
+          style: TextStyle(color: Colors.white10, fontSize: 10, letterSpacing: 3),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildInactiveState() {
+    return const Column(
+      children: [
+        Text(
+          'TAP SHIELD TO CONFIGURE',
+          style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold, letterSpacing: 2),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -419,88 +546,27 @@ print(event);
         decoration: const BoxDecoration(
           gradient: RadialGradient(
             colors: [Color(0xFF1E1E3F), Color(0xFF0F0F1A)],
-            radius: 1.0,
+            radius: 1.2, 
           ),
         ),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text('TRUE NORTH', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900, letterSpacing: 8, color: Colors.white70)),
-            const SizedBox(height: 60),
-            
-            GestureDetector(
-              onTap: () {
-                if (isGuardianActive) {
-                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Long press to deactivate')));
-                } else {
-                  _showPreFlightChecklist();
-                }
-              },
-              onLongPress: () async {
-                if (isGuardianActive) {
-                  _showStandDownDialog();
-                }
-              },
-              child: Stack(
-                alignment: Alignment.center,
-                children: [
-                  // The Outer Progress Ring (Only shows when active)
-                  if (isGuardianActive && _guardianSession != null)
-                    SizedBox(
-                      width: 240,
-                      height: 240,
-                      child: CircularProgressIndicator(
-                        value: _guardianSession!.progressFactor,
-                        strokeWidth: 4,
-                        backgroundColor: Colors.white10,
-                        valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFFFD700)),
-                      ),
-                    ),
-                  
-                  // The Main Shield Button
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 500),
-                    width: 200, height: 200,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: isGuardianActive ? const Color(0xFF1E1E3F) : Colors.transparent,
-                      border: Border.all(color: isGuardianActive ? const Color(0xFFFFD700) : Colors.white10, width: 2),
-                      boxShadow: isGuardianActive ? [BoxShadow(color: const Color(0xFFFFD700).withOpacity(0.1), blurRadius: 40, spreadRadius: 5)] : [],
-                    ),
-                    child: Icon(
-                      isGuardianActive ? Icons.shield : Icons.shield_outlined, 
-                      size: 80, 
-                      color: isGuardianActive ? const Color(0xFFFFD700) : Colors.white24
-                    ),
-                  ),
-                ],
-              ),
+            const SizedBox(height: 80),
+            const Text(
+              'TRUE NORTH', 
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, letterSpacing: 12, color: Colors.white24)
             ),
+            
+            const Spacer(),
+            _buildTacticalShield(),
+            const Spacer(),
 
-            const SizedBox(height: 40),
+            if (isGuardianActive && _guardianSession != null)
+              _buildActiveReadouts()
+            else
+              _buildInactiveState(),
 
-            // Tactical Readout
-            if (isGuardianActive && _guardianSession != null) ...[
-              Text(
-                _guardianSession!.countdownText,
-                style: const TextStyle(color: Color(0xFFFFD700), fontSize: 42, fontWeight: FontWeight.w900, letterSpacing: 2),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                "DISTANCE TO HOME: ${_guardianSession!.distanceText.toUpperCase()}",
-                style: const TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5),
-              ),
-              const SizedBox(height: 24),
-              const Text(
-                'LONG PRESS SHIELD TO STAND DOWN',
-                style: TextStyle(color: Colors.white24, fontSize: 10, letterSpacing: 1),
-              ),
-            ] else ...[
-              const Text(
-                'TAP TO CONFIGURE GUARDIAN',
-                style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold, letterSpacing: 2),
-              ),
-            ],
+            const SizedBox(height: 60),
           ],
         ),
       ),
