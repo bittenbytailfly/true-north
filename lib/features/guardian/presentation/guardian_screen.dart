@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart';
@@ -17,21 +16,23 @@ class GuardianScreen extends StatefulWidget {
   State<GuardianScreen> createState() => _GuardianScreenState();
 }
 
-// 1. ADDED MIXIN: SingleTickerProviderStateMixin is required for animations
 class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProviderStateMixin {
+  // --- STATE ---
   bool isGuardianActive = false;
   bool _isValidating = false;
   GuardianSession? _guardianSession;
   Timer? _uiClockTimer;
 
-  // 2. ADDED ANIMATION VARIABLES
-  late AnimationController _pulseController;
-  late Animation<double> _pulseAnimation;
+  // --- ANIMATION CONTROLLER ---
+  late AnimationController _glowController;
+  late Animation<double> _glowOpacity;
 
+  // --- CONTROLLERS ---
   final TextEditingController _homeController = TextEditingController();
   final TextEditingController _anchorController = TextEditingController();
   final TextEditingController _landingController = TextEditingController();
 
+  // --- CONFIG ---
   TimeOfDay _leaveTime = const TimeOfDay(hour: 23, minute: 0);
   bool _hydrationEnabled = true;
   Position? _homePoint; 
@@ -40,23 +41,45 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
   void initState() {
     super.initState();
     
-    // 3. INITIALIZE THE ANIMATION
-    _pulseController = AnimationController(
+    // 1. Initialize the controller, but DO NOT animate it yet.
+    _glowController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 2), // A slow, calm breathing pace
+      duration: const Duration(seconds: 2), 
     );
     
-    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.15).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    _glowOpacity = Tween<double>(begin: 0.05, end: 0.30).animate(
+      CurvedAnimation(parent: _glowController, curve: Curves.easeInOut),
     );
 
-    _checkArrivalStatus();
-    _setupServiceConnection();
-    
-    _uiClockTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (isGuardianActive && _guardianSession != null && mounted) {
-        setState(() {}); 
-      }
+    // 2. Safe check for arrival status
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _checkArrivalStatus();
+    });
+
+    // 3. DEFER EVERYTHING ELSE UNTIL THE FIRST FRAME IS DRAWN
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      
+      _setupServiceConnection();
+      
+      // 4. Start the heartbeat only after we are sure the screen is alive
+      _uiClockTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (isGuardianActive && _guardianSession != null && mounted) {
+          
+          bool isLate = _guardianSession!.targetDepartureTime.isBefore(DateTime.now());
+          Duration targetDuration = isLate ? const Duration(seconds: 1) : const Duration(seconds: 2);
+          
+          if (_glowController.duration != targetDuration) {
+            _glowController.duration = targetDuration;
+            // Only restart if it's currently active
+            if (_glowController.isAnimating) {
+              _glowController.repeat(reverse: true);
+            }
+          }
+
+          setState(() {}); 
+        }
+      });
     });
   }
 
@@ -64,10 +87,13 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     final service = FlutterBackgroundService();
     
     if (await service.isRunning()) {
-      setState(() {
-        isGuardianActive = true;
-        _pulseController.repeat(reverse: true); // Start pulse if already running
-      });
+      if (mounted) {
+        setState(() {
+          isGuardianActive = true;
+          // Ensure it doesn't try to animate if we are in the background
+          if (!_glowController.isAnimating) _glowController.repeat(reverse: true); 
+        });
+      }
       service.invoke('request_state');
     }
 
@@ -75,11 +101,13 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
       if (event != null && mounted) {
         try {
           final safeMap = Map<String, dynamic>.from(event);
-          setState(() {
-            _guardianSession = GuardianSession.fromMap(safeMap);
-            isGuardianActive = true;
-            if (!_pulseController.isAnimating) _pulseController.repeat(reverse: true);
-          });
+          if (mounted) {
+            setState(() {
+              _guardianSession = GuardianSession.fromMap(safeMap);
+              isGuardianActive = true;
+              if (!_glowController.isAnimating) _glowController.repeat(reverse: true);
+            });
+          }
         } catch (e) {
           print("🚨 [UI] Failed to parse session data: $e"); 
         }
@@ -89,8 +117,12 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
 
   @override
   void dispose() {
-    _pulseController.dispose(); // 4. CLEANUP ANIMATION
+    // Kill timers and streams FIRST
     _uiClockTimer?.cancel();
+    
+    // Kill animation SECOND
+    _glowController.dispose(); 
+    
     _homeController.dispose();
     _anchorController.dispose();
     _landingController.dispose();
@@ -161,8 +193,14 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
 
   void _activateGuardian() async {
     final now = DateTime.now();
-    DateTime targetDateTime = DateTime(now.year, now.month, now.day, _leaveTime.hour, _leaveTime.minute);
-    if (targetDateTime.isBefore(now)) targetDateTime = targetDateTime.add(const Duration(days: 1));
+    
+    DateTime targetDateTime = DateTime(
+      now.year, now.month, now.day, 
+      _leaveTime.hour, _leaveTime.minute
+    );
+    if (targetDateTime.isBefore(now)) {
+      targetDateTime = targetDateTime.add(const Duration(days: 1));
+    }
 
     final session = GuardianSession(
       activationTime: now,
@@ -180,7 +218,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     setState(() {
       isGuardianActive = true;
       _guardianSession = session;
-      _pulseController.repeat(reverse: true); // 5. START PULSE
+      _glowController.repeat(reverse: true); 
     });
 
     final service = FlutterBackgroundService();
@@ -192,7 +230,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     setState(() {
       isGuardianActive = false;
       _guardianSession = null;
-      _pulseController.reset(); // 6. STOP PULSE
+      _glowController.reset(); 
     });
     
     await SessionRepository().clearSession();
@@ -238,6 +276,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
 
   void _showPreFlightChecklist() {
     String errorMessage = ''; 
+
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1E1E3F),
@@ -415,11 +454,35 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     );
   }
 
+  // --- HELPER: COLOR CALCULATION ---
+  Color _getGlowColor() {
+    if (_guardianSession == null) return const Color(0xFF4CAF50); // Steady Sage Green default
+    
+    final diff = _guardianSession!.targetDepartureTime.difference(DateTime.now()); 
+    
+    if (diff.isNegative) return const Color(0xFFFF4C4C); // Pulsing Red when late
+    
+    // Smooth transition from Sage Green to Red in the final 30 minutes
+    if (diff.inMinutes <= 30) {
+      double factor = 1.0 - (diff.inSeconds / (30 * 60)); 
+      return Color.lerp(
+        const Color(0xFF4CAF50), // Sage
+        const Color(0xFFFF4C4C), // Red
+        factor.clamp(0.0, 1.0)
+      )!;
+    }
+    
+    return const Color(0xFF4CAF50); // Steady Sage Green
+  }
+
   // --- MODULAR UI WIDGETS ---
 
   Widget _buildTacticalShield() {
     double progress = _guardianSession?.progressFactor ?? 0.0;
     
+    Color activeStatusColor = _getGlowColor();
+    bool isLate = _guardianSession?.targetDepartureTime.isBefore(DateTime.now()) ?? false; 
+
     return GestureDetector(
       onTap: () {
         if (!isGuardianActive) _showPreFlightChecklist();
@@ -430,20 +493,26 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
       child: Stack(
         alignment: Alignment.center,
         children: [
+          // DYNAMIC PULSATING GLOW 
           if (isGuardianActive)
-            Container(
-              width: 260,
-              height: 260,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFFFFD700).withOpacity(0.08),
-                    blurRadius: 80,
-                    spreadRadius: 20,
+            AnimatedBuilder(
+              animation: _glowController,
+              builder: (context, child) {
+                return Container(
+                  width: 260,
+                  height: 260,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: activeStatusColor.withOpacity(_glowOpacity.value),
+                        blurRadius: 100, 
+                        spreadRadius: 20,
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                );
+              }
             ),
             
           if (isGuardianActive)
@@ -454,7 +523,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
                 value: progress,
                 strokeWidth: 3,
                 backgroundColor: Colors.white.withOpacity(0.05),
-                valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFFFD700)),
+                valueColor: AlwaysStoppedAnimation<Color>(activeStatusColor),
               ),
             ),
 
@@ -467,18 +536,14 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
               shape: BoxShape.circle,
               color: isGuardianActive ? const Color(0xFF1E1E3F) : Colors.transparent,
               border: Border.all(
-                color: isGuardianActive ? const Color(0xFFFFD700) : Colors.white10,
+                color: isGuardianActive ? activeStatusColor : Colors.white10,
                 width: 1.5,
               ),
             ),
-            // 7. IMPLEMENTED SCALETRANSITION AROUND THE ICON
-            child: ScaleTransition(
-              scale: isGuardianActive ? _pulseAnimation : const AlwaysStoppedAnimation(1.0),
-              child: Icon(
-                isGuardianActive ? Icons.shield : Icons.shield_outlined,
-                size: 80,
-                color: isGuardianActive ? const Color(0xFFFFD700) : Colors.white10,
-              ),
+            child: Icon(
+              isGuardianActive ? Icons.shield : Icons.shield_outlined, 
+              size: 80, 
+              color: isGuardianActive ? activeStatusColor : Colors.white10 
             ),
           ),
         ],
@@ -487,15 +552,18 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
   }
 
   Widget _buildActiveReadouts() {
+    final diff = _guardianSession!.targetDepartureTime.difference(DateTime.now()); 
+    final bool isLate = diff.isNegative;
+    
     return Column(
       children: [
         Text(
           _guardianSession!.countdownText,
-          style: const TextStyle(
-            color: Color(0xFFFFD700),
-            fontSize: 48,
+          style: TextStyle(
+            color: isLate ? const Color(0xFFFF4C4C) : const Color(0xFFFFD700),
+            fontSize: 48, 
             fontWeight: FontWeight.w900, 
-            letterSpacing: 2,
+            letterSpacing: 2,           
           ),
         ),
         const SizedBox(height: 12),
@@ -508,7 +576,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
             color: Colors.black12,
           ),
           child: Text(
-            "DISTANCE: ${_guardianSession!.distanceText.toUpperCase()}",
+            "DISTANCE TO HOME: ${_guardianSession!.distanceText.toUpperCase()}",
             style: const TextStyle(
               color: Colors.white54,
               fontSize: 11,
