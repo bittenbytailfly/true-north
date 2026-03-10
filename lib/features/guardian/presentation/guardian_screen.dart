@@ -54,6 +54,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       
+      _restoreLocalSession();
       _setupServiceConnection();
       
       _uiClockTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -740,6 +741,16 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
         );
       },
     );
+  }
+
+  Future<void> _restoreLocalSession() async {
+    final savedSession = await SessionRepository().getSession();
+    if (savedSession != null && mounted) {
+      setState(() {
+        _guardianSession = savedSession;
+        if (!_glowController.isAnimating) _glowController.repeat(reverse: true);
+      });
+    }
   }
 
   @override

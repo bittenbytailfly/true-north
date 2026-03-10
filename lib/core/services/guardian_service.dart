@@ -153,6 +153,8 @@ Future<void> _configureLocationServices() async {
     double distance = Geolocator.distanceBetween(position.latitude, position.longitude, _session.homeLat, _session.homeLng);
     _session.distanceInMeters = distance;
 
+    _service.invoke('updateUI', _session.toMap());
+
     if (distance <= 150.0) {
         print("🏁 [STREAM] Home Location Reached.");
         String landingMsg = _session.homeReminderText;

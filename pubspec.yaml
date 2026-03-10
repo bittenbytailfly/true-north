@@ -45,6 +45,7 @@ dependencies:
   shared_preferences: ^2.5.4
   battery_plus: ^7.0.0
   geofence_service: ^6.0.0+1
+  flutter_native_splash: ^2.4.7
 
 dev_dependencies:
   flutter_test:

@@ -97,8 +97,8 @@ class GuardianSession {
   factory GuardianSession.fromMap(Map<String, dynamic> map) => GuardianSession(
     targetDepartureTime: DateTime.parse(map['targetDepartureTime']),
     activationTime: DateTime.parse(map['activationTime']),
-    homeLat: map['homeLat'],
-    homeLng: map['homeLng'],
+    homeLat: (map['homeLat'] as num).toDouble(),
+    homeLng: (map['homeLng'] as num).toDouble(),
     anchorReason: map['anchorReason'],
     homeReminderText: map['homeReminderText'],
     isSnoozed: map['isSnoozed'] ?? false,
@@ -108,7 +108,7 @@ class GuardianSession {
     lastNudgeAlertTime: map['lastNudgeAlertTime'] != null ? DateTime.parse(map['lastNudgeAlertTime']) : null,
     halfwayAlertSent: map['halfwayAlertSent'] ?? false,
     almostTimeAlertSent: map['almostTimeAlertSent'] ?? false,
-    distanceInMeters: map['distanceInMeters'] ?? 0.0,
+    distanceInMeters: map['distanceInMeters'] != null ? (map['distanceInMeters'] as num).toDouble() : null,
     nudgesEnabled: map['nudgesEnabled'] ?? true,
   );
 }
