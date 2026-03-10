@@ -22,7 +22,6 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
   bool get isGuardianActive => _guardianSession != null;
   Timer? _uiClockTimer;
 
-
   bool _hasShownLateModal = false;
 
   // --- ANIMATION CONTROLLER ---
@@ -63,12 +62,15 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
           bool isLate = _guardianSession!.targetDepartureTime.isBefore(DateTime.now());
           bool isSnoozed = _guardianSession!.isSnoozed;
           
-          // 🛡️ THE MODAL TRIGGER
+          // 🛡️ FIX 1: THE LIFECYCLE CHECK
+          // Only trigger if late, not snoozed, hasn't shown, AND the app is fully resumed on screen
           if (isLate && !isSnoozed && !_hasShownLateModal) {
-            _hasShownLateModal = true;
-            _showLateInterventionModal();
+            if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+              _hasShownLateModal = true;
+              _showLateInterventionModal();
+            }
           } else if (isSnoozed) {
-            // Reset the flag so the modal can attack them again when the snooze expires!
+            // Reset the flag so the modal can attack them again when the snooze expires
             _hasShownLateModal = false;
           }
           
@@ -90,52 +92,50 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
   void _showLateInterventionModal() {
     showDialog(
       context: context,
-      barrierDismissible: false, // 🛡️ Friction: They CANNOT tap away. They must choose.
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFFFF4C4C).withOpacity(0.95), // Urgent Red
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            Icon(Icons.warning_amber_rounded, color: Colors.white, size: 28),
-            SizedBox(width: 10),
-            Text("MISSION CRITICAL", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+      barrierDismissible: false, 
+      // 🛡️ FIX 2: POPSCOPE
+      // This prevents the user from swiping back or using the Android back button to escape
+      builder: (context) => PopScope(
+        canPop: false, 
+        child: AlertDialog(
+          backgroundColor: const Color(0xFFFF4C4C).withOpacity(0.95), 
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.white, size: 28),
+              SizedBox(width: 10),
+              Text("MISSION CRITICAL", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                "You are past your departure time. Stand down now, or remember why you need to move:", 
+                style: TextStyle(color: Colors.white, fontSize: 15)
+              ),
+              const SizedBox(height: 15),
+              Text(
+                '"${_guardianSession?.anchorReason}"', 
+                style: const TextStyle(color: Colors.white, fontSize: 18, fontStyle: FontStyle.italic, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+          actions: [
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.black, 
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () {
+                Navigator.pop(context);
+                _snoozeGuardian(); 
+              },
+              child: const Text("SNOOZE (5 MINS)", style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              "You are past your departure time. Stand down now, or remember why you need to move:", 
-              style: TextStyle(color: Colors.white, fontSize: 15)
-            ),
-            const SizedBox(height: 15),
-            Text(
-              '"${_guardianSession?.anchorReason}"', 
-              style: const TextStyle(color: Colors.white, fontSize: 18, fontStyle: FontStyle.italic, fontWeight: FontWeight.bold),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              _deactivateGuardian(); // Surrender
-            },
-            child: const Text("STAND DOWN", style: TextStyle(color: Colors.white70)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.black, // Stark contrast against the red
-              foregroundColor: Colors.white,
-            ),
-            onPressed: () {
-              Navigator.pop(context);
-              _snoozeGuardian(); // Buy 5 minutes
-            },
-            child: const Text("SNOOZE (5 MINS)", style: TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
       ),
     );
   }
@@ -249,7 +249,6 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     FlutterBackgroundService().invoke('stopService');
   }
 
-  // 🛡️ NEW: Function to send the snooze command to the background service
   void _snoozeGuardian() {
     FlutterBackgroundService().invoke('snooze_mission');
   }
@@ -446,7 +445,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
             text: TextSpan(
               style: const TextStyle(color: Colors.white70, fontSize: 16, height: 1.4),
               children: [
-                const TextSpan(text: "You are about to deactivate the Guardian.\n\nBut remember: "),
+                const TextSpan(text: "You are about to deactivate the Guardian.\n\nBut remember\n\n: "),
                 TextSpan(
                   text: '"${_guardianSession?.anchorReason ?? "you need to be sharp tomorrow"}"\n\n',
                   style: const TextStyle(color: Color(0xFFFFD700), fontWeight: FontWeight.bold, fontStyle: FontStyle.italic),
@@ -605,8 +604,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
         
         const SizedBox(height: 30),
 
-         if (isLate && isSnoozed) ...[
-          // Feedback that the snooze worked
+        if (isLate && isSnoozed) ...[
           const Text("SNOOZED FOR 5 MINUTES", style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, letterSpacing: 2)),
         ],
 
@@ -642,25 +640,36 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
             radius: 1.2, 
           ),
         ),
-        child: Column(
-          children: [
-            const SizedBox(height: 80),
-            const Text(
-              'TRUE NORTH', 
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, letterSpacing: 12, color: Colors.white24)
-            ),
-            
-            const Spacer(),
-            _buildTacticalShield(),
-            const Spacer(),
+        // 🛡️ FIX 4: CUSTOMSCROLLVIEW
+        // This ensures the new inline UI button doesn't crash into the bottom of the screen!
+        child: SafeArea(
+          child: CustomScrollView(
+            slivers: [
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: Column(
+                  children: [
+                    const SizedBox(height: 20),
+                    const Text(
+                      'TRUE NORTH', 
+                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, letterSpacing: 12, color: Colors.white24)
+                    ),
+                    
+                    const Spacer(),
+                    _buildTacticalShield(),
+                    const Spacer(),
 
-            if (isGuardianActive && _guardianSession != null)
-              _buildActiveReadouts()
-            else
-              _buildInactiveState(),
+                    if (isGuardianActive && _guardianSession != null)
+                      _buildActiveReadouts()
+                    else
+                      _buildInactiveState(),
 
-            const SizedBox(height: 60),
-          ],
+                    const SizedBox(height: 40),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
