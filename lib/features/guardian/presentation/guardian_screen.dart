@@ -283,6 +283,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     return TextField(
       controller: controller,
       style: const TextStyle(color: Colors.white),
+      textCapitalization: textCapitalization,
       decoration: InputDecoration(
         labelText: label,
         labelStyle: const TextStyle(color: Color(0xFFFFD700)),
@@ -328,6 +329,9 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
                     subtitle: Text(_leaveTime.format(context), style: const TextStyle(color: Colors.white54)),
                     trailing: const Icon(Icons.access_time, color: Color(0xFFFFD700)),
                     onTap: () async {
+                      // 🛡️ THE FIX: Force the keyboard to drop its focus immediately
+                      FocusScope.of(context).unfocus();
+                      
                       TimeOfDay? picked = await showTimePicker(context: context, initialTime: _leaveTime);
                       if (picked != null) setSheetState(() => _leaveTime = picked);
                     },
@@ -337,15 +341,27 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Tactical Nudges', style: TextStyle(color: Colors.white)),
                     subtitle: const Text('Periodic messages to keep you on track', style: TextStyle(color: Colors.white54)),
-                    activeColor: const Color(0xFFFFD700),
+                    activeThumbColor: const Color(0xFFFFD700),
                     value: _nudgesEnabled,
                     onChanged: (bool value) => setSheetState(() => _nudgesEnabled = value),
                   ),
                   
+                  const SizedBox(height: 30), 
+                  
+                  const Text(
+                    'MESSAGES TO YOUR FUTURE SELF', 
+                    style: TextStyle(
+                      fontSize: 13, 
+                      fontWeight: FontWeight.bold, 
+                      color: Color.fromARGB(255, 255, 255, 255), 
+                      letterSpacing: 2
+                    )
+                  ),
+
                   const SizedBox(height: 15),
-                  _buildCustomField(controller: _anchorController, label: "The Anchor (Why get home?)", hint: "e.g., Big meeting at 9am", textCapitalization: TextCapitalization.sentences),
+                  _buildCustomField(controller: _anchorController, label: "The Anchor (why you need to leave)", hint: "e.g., You've got a big meeting at 9am", textCapitalization: TextCapitalization.sentences),
                   const SizedBox(height: 15),
-                  _buildCustomField(controller: _landingController, label: "The Landing (Reminder when your home)", hint: "e.g., Let my family know I'm home safe", textCapitalization: TextCapitalization.sentences),
+                  _buildCustomField(controller: _landingController, label: "The Landing (when you get home)", hint: "e.g., Let your family know you're home safe", textCapitalization: TextCapitalization.sentences),
                   
                   const SizedBox(height: 20),
 
@@ -504,7 +520,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
         if (!isGuardianActive) _showPreFlightChecklist();
       },
       onLongPress: () {
-        if (isGuardianActive) _showStandDownDialog();
+        if (isGuardianActive) _showDisarmSecurityCheck();
       },
       child: Stack(
         alignment: Alignment.center,
@@ -626,6 +642,103 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
           style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold, letterSpacing: 2),
         ),
       ],
+    );
+  }
+
+  void _showDisarmSecurityCheck() {
+    final TextEditingController oathController = TextEditingController();
+    String? localError;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false, // 🛡️ Friction: Must complete or cancel explicitly
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E1E3F),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+                side: const BorderSide(color: Colors.white10),
+              ),
+              title: const Row(
+                children: [
+                  Icon(Icons.security, color: Colors.redAccent),
+                  SizedBox(width: 10),
+                  Text("DISARM PROTOCOL", style: TextStyle(color: Colors.white, fontSize: 16, letterSpacing: 2)),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    "To stand down, you must type your Anchor Reason exactly as written:",
+                    style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.4)
+                  ),
+                  const SizedBox(height: 15),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: Colors.black26,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.white10)
+                    ),
+                    child: Text(
+                      '"${_guardianSession?.anchorReason}"',
+                      style: const TextStyle(color: Color(0xFFFFD700), fontStyle: FontStyle.italic, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  const SizedBox(height: 15),
+                  TextField(
+                    controller: oathController,
+                    autofocus: true,
+                    style: const TextStyle(color: Colors.white),
+                    decoration: InputDecoration(
+                      hintText: "Type your oath...",
+                      hintStyle: TextStyle(color: Colors.white.withOpacity(0.2)),
+                      errorText: localError,
+                      errorStyle: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold),
+                      enabledBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
+                      focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: Color(0xFFFFD700))),
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text("CANCEL", style: TextStyle(color: Colors.white54)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red.withOpacity(0.8),
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: () {
+                    // 🛡️ The Check: Compares the text. 
+                    // We use .toLowerCase() so we don't punish them for autocorrect capitalization, 
+                    // but they still have to type the actual words.
+                    String input = oathController.text.trim().toLowerCase();
+                    String target = _guardianSession?.anchorReason.trim().toLowerCase() ?? "";
+
+                    if (input == target) {
+                      Navigator.pop(context);
+                      _deactivateGuardian(); // Success: Disarm the shield
+                    } else {
+                      setDialogState(() {
+                        localError = "Signature mismatch. Try again."; // Failure: Shake them up
+                      });
+                    }
+                  },
+                  child: const Text("DISARM", style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ],
+            );
+          }
+        );
+      },
     );
   }
 
