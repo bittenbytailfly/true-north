@@ -433,7 +433,6 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     double progress = _guardianSession?.progressFactor ?? 0.0;
     
     Color activeStatusColor = _getGlowColor();
-    bool isLate = _guardianSession?.targetDepartureTime.isBefore(DateTime.now()) ?? false; 
 
     return GestureDetector(
       onTap: () {
