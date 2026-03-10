@@ -143,31 +143,34 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
 
   void _setupServiceConnection() async {
     final service = FlutterBackgroundService();
-    
+
+    // 🛡️ FIX 1: Set up the listener FIRST so we don't miss the immediate reply
+    service.on('updateUI').listen((event) {
+      if (event != null && mounted) {
+        try {
+          final safeMap = Map<String, dynamic>.from(event);
+          setState(() {
+            _guardianSession = GuardianSession.fromMap(safeMap);
+            if (!_glowController.isAnimating) _glowController.repeat(reverse: true);
+          });
+        } catch (e, stacktrace) {
+          // 🛡️ FIX 2: Print the stack trace so we can see EXACTLY what data type is failing
+          print("🚨 [UI] Failed to parse session data: $e"); 
+          print(stacktrace);
+        }
+      }
+    });
+
+    // 🛡️ Now that we are listening, ask for the state.
     if (await service.isRunning()) {
       if (mounted) {
         setState(() {
           if (!_glowController.isAnimating) _glowController.repeat(reverse: true); 
         });
       }
+      print("📡 [UI] Requesting live state from background service...");
       service.invoke('request_state');
     }
-
-    service.on('updateUI').listen((event) {
-      if (event != null && mounted) {
-        try {
-          final safeMap = Map<String, dynamic>.from(event);
-          if (mounted) {
-            setState(() {
-              _guardianSession = GuardianSession.fromMap(safeMap);
-              if (!_glowController.isAnimating) _glowController.repeat(reverse: true);
-            });
-          }
-        } catch (e) {
-          print("🚨 [UI] Failed to parse session data: $e"); 
-        }
-      }
-    });
   }
 
   @override

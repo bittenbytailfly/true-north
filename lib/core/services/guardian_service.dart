@@ -152,7 +152,7 @@ Future<void> _configureLocationServices() async {
   positionStream = Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) async {
     double distance = Geolocator.distanceBetween(position.latitude, position.longitude, _session.homeLat, _session.homeLng);
     _session.distanceInMeters = distance;
-
+    await SessionRepository().saveSession(_session);
     _service.invoke('updateUI', _session.toMap());
 
     if (distance <= 150.0) {
