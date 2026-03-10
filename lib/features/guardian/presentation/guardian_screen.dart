@@ -22,6 +22,9 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
   bool get isGuardianActive => _guardianSession != null;
   Timer? _uiClockTimer;
 
+
+  bool _hasShownLateModal = false;
+
   // --- ANIMATION CONTROLLER ---
   late AnimationController _glowController;
   late Animation<double> _glowOpacity;
@@ -33,14 +36,13 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
 
   // --- CONFIG ---
   TimeOfDay _leaveTime = const TimeOfDay(hour: 23, minute: 0);
-  bool _hydrationEnabled = true;
+  bool _nudgesEnabled = true;
   Position? _homePoint; 
 
   @override
   void initState() {
     super.initState();
     
-    // 1. Initialize the controller, but DO NOT animate it yet.
     _glowController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 2), 
@@ -50,22 +52,30 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
       CurvedAnimation(parent: _glowController, curve: Curves.easeInOut),
     );
 
-    // 3. DEFER EVERYTHING ELSE UNTIL THE FIRST FRAME IS DRAWN
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       
       _setupServiceConnection();
       
-      // 4. Start the heartbeat only after we are sure the screen is alive
       _uiClockTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         if (isGuardianActive && _guardianSession != null && mounted) {
           
           bool isLate = _guardianSession!.targetDepartureTime.isBefore(DateTime.now());
+          bool isSnoozed = _guardianSession!.isSnoozed;
+          
+          // 🛡️ THE MODAL TRIGGER
+          if (isLate && !isSnoozed && !_hasShownLateModal) {
+            _hasShownLateModal = true;
+            _showLateInterventionModal();
+          } else if (isSnoozed) {
+            // Reset the flag so the modal can attack them again when the snooze expires!
+            _hasShownLateModal = false;
+          }
+          
           Duration targetDuration = isLate ? const Duration(seconds: 1) : const Duration(seconds: 2);
           
           if (_glowController.duration != targetDuration) {
             _glowController.duration = targetDuration;
-            // Only restart if it's currently active
             if (_glowController.isAnimating) {
               _glowController.repeat(reverse: true);
             }
@@ -75,6 +85,59 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
         }
       });
     });
+  }
+
+  void _showLateInterventionModal() {
+    showDialog(
+      context: context,
+      barrierDismissible: false, // 🛡️ Friction: They CANNOT tap away. They must choose.
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFFFF4C4C).withOpacity(0.95), // Urgent Red
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, color: Colors.white, size: 28),
+            SizedBox(width: 10),
+            Text("MISSION CRITICAL", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              "You are past your departure time. Stand down now, or remember why you need to move:", 
+              style: TextStyle(color: Colors.white, fontSize: 15)
+            ),
+            const SizedBox(height: 15),
+            Text(
+              '"${_guardianSession?.anchorReason}"', 
+              style: const TextStyle(color: Colors.white, fontSize: 18, fontStyle: FontStyle.italic, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _deactivateGuardian(); // Surrender
+            },
+            child: const Text("STAND DOWN", style: TextStyle(color: Colors.white70)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.black, // Stark contrast against the red
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              Navigator.pop(context);
+              _snoozeGuardian(); // Buy 5 minutes
+            },
+            child: const Text("SNOOZE (5 MINS)", style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
   }
 
   void _setupServiceConnection() async {
@@ -108,12 +171,8 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
 
   @override
   void dispose() {
-    // Kill timers and streams FIRST
     _uiClockTimer?.cancel();
-    
-    // Kill animation SECOND
     _glowController.dispose(); 
-    
     _homeController.dispose();
     _anchorController.dispose();
     _landingController.dispose();
@@ -162,7 +221,8 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
       homeLat: _homePoint!.latitude,
       homeLng: _homePoint!.longitude,
       anchorReason: _anchorController.text.isNotEmpty ? _anchorController.text : "you need to be sharp tomorrow",
-      homeReminderText: _landingController.text.isNotEmpty ? _landingController.text : "Welcome home. The Guardian is standing down."
+      homeReminderText: _landingController.text.isNotEmpty ? _landingController.text : "Welcome home. The Guardian is standing down.",
+      nudgesEnabled: _nudgesEnabled,
     );
 
     await SessionRepository().saveSession(session);
@@ -189,6 +249,11 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     FlutterBackgroundService().invoke('stopService');
   }
 
+  // 🛡️ NEW: Function to send the snooze command to the background service
+  void _snoozeGuardian() {
+    FlutterBackgroundService().invoke('snooze_mission');
+  }
+
   Future<void> _showBackgroundRationaleDialog() async {
     return showDialog(
       context: context,
@@ -210,7 +275,12 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     );
   }
 
-  Widget _buildCustomField({required TextEditingController controller, required String label, required String hint, IconData? icon}) {
+  Widget _buildCustomField({required TextEditingController controller, 
+    required String label, 
+    required String hint, 
+    IconData? icon,
+    TextCapitalization textCapitalization = TextCapitalization.none,
+  }) {
     return TextField(
       controller: controller,
       style: const TextStyle(color: Colors.white),
@@ -247,10 +317,10 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('THE EVENING SCRIPT', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFFFFD700), letterSpacing: 2)),
+                  const Text('GOOD INTENTIONS', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFFFFD700), letterSpacing: 2)),
                   const SizedBox(height: 20),
                   
-                  _buildCustomField(controller: _homeController, label: 'Home Postcode', hint: 'e.g. SW1A 1AA', icon: Icons.home),
+                  _buildCustomField(controller: _homeController, label: 'Home Postcode', hint: 'e.g. SW1A 1AA', icon: Icons.home, textCapitalization: TextCapitalization.characters),
                   const SizedBox(height: 10),
                   
                   ListTile(
@@ -266,16 +336,17 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
                   
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
-                    title: const Text('Hourly Hydration', style: TextStyle(color: Colors.white)),
+                    title: const Text('Tactical Nudges', style: TextStyle(color: Colors.white)),
+                    subtitle: const Text('Periodic messages to keep you on track', style: TextStyle(color: Colors.white54)),
                     activeColor: const Color(0xFFFFD700),
-                    value: _hydrationEnabled,
-                    onChanged: (bool value) => setSheetState(() => _hydrationEnabled = value),
+                    value: _nudgesEnabled,
+                    onChanged: (bool value) => setSheetState(() => _nudgesEnabled = value),
                   ),
                   
                   const SizedBox(height: 15),
-                  _buildCustomField(controller: _anchorController, label: "The Anchor (Why get home?)", hint: "e.g., Big meeting at 9am"),
+                  _buildCustomField(controller: _anchorController, label: "The Anchor (Why get home?)", hint: "e.g., Big meeting at 9am", textCapitalization: TextCapitalization.sentences),
                   const SizedBox(height: 15),
-                  _buildCustomField(controller: _landingController, label: "The Landing (Final reminder)", hint: "e.g., Text Sarah I'm safe"),
+                  _buildCustomField(controller: _landingController, label: "The Landing (Reminder when your home)", hint: "e.g., Let my family know I'm home safe", textCapitalization: TextCapitalization.sentences),
                   
                   const SizedBox(height: 20),
 
@@ -406,32 +477,27 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     );
   }
 
-  // --- HELPER: COLOR CALCULATION ---
   Color _getGlowColor() {
-    if (_guardianSession == null) return const Color(0xFF4CAF50); // Steady Sage Green default
+    if (_guardianSession == null) return const Color(0xFF4CAF50); 
     
     final diff = _guardianSession!.targetDepartureTime.difference(DateTime.now()); 
     
-    if (diff.isNegative) return const Color(0xFFFF4C4C); // Pulsing Red when late
+    if (diff.isNegative) return const Color(0xFFFF4C4C); 
     
-    // Smooth transition from Sage Green to Red in the final 30 minutes
     if (diff.inMinutes <= 30) {
       double factor = 1.0 - (diff.inSeconds / (30 * 60)); 
       return Color.lerp(
-        const Color(0xFF4CAF50), // Sage
-        const Color(0xFFFF4C4C), // Red
+        const Color(0xFF4CAF50), 
+        const Color(0xFFFF4C4C), 
         factor.clamp(0.0, 1.0)
       )!;
     }
     
-    return const Color(0xFF4CAF50); // Steady Sage Green
+    return const Color(0xFF4CAF50); 
   }
-
-  // --- MODULAR UI WIDGETS ---
 
   Widget _buildTacticalShield() {
     double progress = _guardianSession?.progressFactor ?? 0.0;
-    
     Color activeStatusColor = _getGlowColor();
 
     return GestureDetector(
@@ -444,7 +510,6 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // DYNAMIC PULSATING GLOW 
           if (isGuardianActive)
             AnimatedBuilder(
               animation: _glowController,
@@ -505,6 +570,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
   Widget _buildActiveReadouts() {
     final diff = _guardianSession!.targetDepartureTime.difference(DateTime.now()); 
     final bool isLate = diff.isNegative;
+    final bool isSnoozed = _guardianSession!.isSnoozed;
     
     return Column(
       children: [
@@ -537,7 +603,15 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
           ),
         ),
         
-        const SizedBox(height: 40),
+        const SizedBox(height: 30),
+
+         if (isLate && isSnoozed) ...[
+          // Feedback that the snooze worked
+          const Text("SNOOZED FOR 5 MINUTES", style: TextStyle(color: Colors.orange, fontWeight: FontWeight.bold, letterSpacing: 2)),
+        ],
+
+        const SizedBox(height: 30),
+
         const Text(
           "HOLD SHIELD TO STAND DOWN",
           style: TextStyle(color: Colors.white10, fontSize: 10, letterSpacing: 3),

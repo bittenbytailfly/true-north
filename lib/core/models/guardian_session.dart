@@ -8,6 +8,7 @@ class GuardianSession {
   final double homeLng;
   final String anchorReason;
   final String homeReminderText;
+  final bool nudgesEnabled;
   bool isSnoozed;
   int snoozeCount;
   DateTime? lastSnoozeTime;
@@ -34,6 +35,7 @@ class GuardianSession {
     this.almostTimeAlertSent = false,
     this.minutesToNextNudge = 30,
     this.distanceInMeters,
+    this.nudgesEnabled = true,
   }){
     minutesToNextNudge = getMinutesToNextNudge();
   }
@@ -89,6 +91,7 @@ class GuardianSession {
     'halfwayAlertSent': halfwayAlertSent,
     'almostTimeAlertSent': almostTimeAlertSent,
     'distanceInMeters': distanceInMeters,
+    'nudgesEnabled': nudgesEnabled,
   };
 
   factory GuardianSession.fromMap(Map<String, dynamic> map) => GuardianSession(
@@ -106,5 +109,6 @@ class GuardianSession {
     halfwayAlertSent: map['halfwayAlertSent'] ?? false,
     almostTimeAlertSent: map['almostTimeAlertSent'] ?? false,
     distanceInMeters: map['distanceInMeters'] ?? 0.0,
+    nudgesEnabled: map['nudgesEnabled'] ?? true,
   );
 }

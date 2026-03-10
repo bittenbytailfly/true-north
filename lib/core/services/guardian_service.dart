@@ -21,18 +21,7 @@ StreamSubscription<Position>? positionStream;
 void notificationTapBackground(NotificationResponse notificationResponse) async {
   WidgetsFlutterBinding.ensureInitialized();
   DartPluginRegistrant.ensureInitialized();
-
-  if (notificationResponse.actionId == 'snooze_guilt') {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.reload();
-    String reason = prefs.getString('anchor_reason') ?? "you need to be sharp tomorrow";
-        
-    // Record exactly when they hit snooze
-    await prefs.setInt('snooze_start_time', DateTime.now().millisecondsSinceEpoch);
-    await prefs.setBool('is_snoozed', true);
-    
-    await _sendGuiltNotification(reason);
-  }
+  // Snooze logic removed from here—now handled entirely in the UI.
 }
 
 Future<void> initializeGuardianService() async {
@@ -72,7 +61,6 @@ void onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
   _service = service;
 
-  // 🛡️ FIX 3: Immediately promote to Foreground to prevent Android 14 crash
   if (service is AndroidServiceInstance) {
     service.setAsForegroundService();
   }
@@ -99,6 +87,16 @@ void onStart(ServiceInstance service) async {
     service.invoke('updateUI', _session.toMap());
   });
 
+  // 🛡️ NEW: Listen for the snooze command from the UI
+  service.on('snooze_mission').listen((event) async {
+    print("💤 [SERVICE] Snooze command received from UI.");
+    _session.isSnoozed = true;
+    _session.lastSnoozeTime = DateTime.now();
+    
+    await SessionRepository().saveSession(_session);
+    service.invoke('updateUI', _session.toMap());
+  });
+
   _configureLocationServices();
   _configureTimedAlerts();
 }
@@ -115,7 +113,7 @@ Future<void> _configureTimedAlerts() async {
         _session.isSnoozed = false;
         _session.lastSnoozeTime = null;
         
-        await SessionRepository().saveSession(_session); // 🛡️ FIX 1: Use Repository
+        await SessionRepository().saveSession(_session); 
         print("💾 [SNOOZE] Session auto-expiry committed to disk.");
       }
     }
@@ -127,7 +125,6 @@ Future<void> _configureTimedAlerts() async {
     if (_isHalfwayThrough) await _sendHalfwayNotification();
     if (_isAlmostTime) await _sendAlmostTimeNotification();
 
-    // Send current state to the UI
     _service.invoke('updateUI', _session.toMap());
   });
 }
@@ -135,32 +132,13 @@ Future<void> _configureTimedAlerts() async {
 // --- Helpers ---
 
 bool _isUrgencyAlertDue(bool isPastDeadline, DateTime now) => isPastDeadline && !_session.isSnoozed && (_session.lastUrgentAlertTime == null || now.difference(_session.lastUrgentAlertTime!).inMinutes >= 1);
-bool _isNudgeMessageOverdue(bool isPastDeadline, DateTime now) => !isPastDeadline && now.difference(_session.lastNudgeAlertTime ?? _session.activationTime).inMinutes >= _session.minutesToNextNudge; 
+bool _isNudgeMessageOverdue(bool isPastDeadline, DateTime now) => _session.nudgesEnabled && !isPastDeadline && now.difference(_session.lastNudgeAlertTime ?? _session.activationTime).inMinutes >= _session.minutesToNextNudge; 
 bool get _isHalfwayThrough => _session.progressFactor >= 0.5 && !_session.halfwayAlertSent;
 bool get _isAlmostTime => _session.progressFactor >= 0.9 && !_session.almostTimeAlertSent;
 
 Future<void> _updateSessionAndNotifyUI() async {
-  await SessionRepository().saveSession(_session); // 🛡️ FIX 1: Use Repository
+  await SessionRepository().saveSession(_session); 
   _service.invoke('updateUI', _session.toMap());
-}
-
-// --- Notifications ---
-
-Future<void> _sendGuiltNotification(String reason) async {
-  final FlutterLocalNotificationsPlugin flip = FlutterLocalNotificationsPlugin();
-  AndroidNotificationDetails ad = AndroidNotificationDetails(
-    NotificationConstants.guiltChannelId, NotificationConstants.guiltChannelName,
-    importance: Importance.max, priority: Priority.high,
-    styleInformation: BigTextStyleInformation(
-      "Snoozed for 5 mins. But remember: <b>'$reason'</b>.",
-      htmlFormatBigText: true, contentTitle: "<b>Are you sure?</b>", htmlFormatContentTitle: true,
-    ),
-  );
-  await flip.show(
-    id: NotificationConstants.guiltId, 
-    title: "Are you sure?", 
-    body: "Remember: $reason", 
-    notificationDetails: NotificationDetails(android: ad));
 }
 
 Future<void> _configureLocationServices() async {
@@ -169,7 +147,6 @@ Future<void> _configureLocationServices() async {
   final locationSettings = AndroidSettings(
     accuracy: LocationAccuracy.high,
     distanceFilter: 50, 
-    // Removed ForegroundNotificationConfig here to prevent clashes with flutter_background_service
   );
 
   positionStream = Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) async {
@@ -232,7 +209,6 @@ Future<void> _showPersistentNotification(DateTime targetTime, DateTime now, bool
 }
 
 Future<void> _sendNudgeAlert() async {
-  // Simple fallback string if GuardianMessages isn't in scope
   final String randomMessage = "Stay sharp. How's that water level looking? 🌊";
 
   AndroidNotificationDetails ad = const AndroidNotificationDetails(
@@ -252,8 +228,7 @@ Future<void> _sendNudgeAlert() async {
   );
 
   _session.lastNudgeAlertTime = DateTime.now();
-  // Ensure your session model has a way to reset this!
-  _session.minutesToNextNudge = 15; // Set a flat 15 for now to test stability
+  _session.minutesToNextNudge = 15; 
   await _updateSessionAndNotifyUI();
 }
 
@@ -285,7 +260,7 @@ Future<void> _sendAlmostTimeNotification() async {
     importance: Importance.high, 
     priority: Priority.high, 
     icon: 'ic_stat_app_icon',
-    color: Color(0xFFE67E22), // Orange for urgency
+    color: Color(0xFFE67E22), 
   );
 
   await _notifications.show(
@@ -295,13 +270,14 @@ Future<void> _sendAlmostTimeNotification() async {
     notificationDetails: NotificationDetails(android: ad)
   );
 
-  _session.almostTimeAlertSent = true; // 🛡️ FIX 4: Corrected copy-paste bug
+  _session.almostTimeAlertSent = true; 
   await _updateSessionAndNotifyUI();
 }
 
 Future<void> _sendUrgencyAlert() async {
-  final Int64List vibrationPattern = Int64List.fromList([0, 500, 100, 500, 100, 1000]);
+  final Int64List vibrationPattern = Int64List.fromList([0, 100, 100, 100, 100, 100, 100, 100, 100, 500, 100, 500, 100, 500]); // Vibrate for 100ms, pause for 100ms, repeated 5 times
   
+  // 🛡️ REFACTOR: Removed fullScreenIntent and actions
   AndroidNotificationDetails ad = AndroidNotificationDetails(
     NotificationConstants.urgentChannelId, 
     NotificationConstants.urgentChannelName,
@@ -309,30 +285,22 @@ Future<void> _sendUrgencyAlert() async {
     priority: Priority.high,
     ongoing: true,
     autoCancel: false,
-    fullScreenIntent: true,
     audioAttributesUsage: AudioAttributesUsage.alarm, 
     category: AndroidNotificationCategory.alarm,
     styleInformation: const BigTextStyleInformation(
-      "Departure time exceeded. Stand down or Move out.",
+      "Departure time exceeded. Tap to open Guardian and stand down or snooze.",
       htmlFormatBigText: true,
       contentTitle: "<b>MISSION CRITICAL</b>",
       htmlFormatContentTitle: true,
     ),
     vibrationPattern: vibrationPattern,
     enableVibration: true,
-    actions: const <AndroidNotificationAction>[
-      AndroidNotificationAction(
-        'snooze_guilt', 
-        'SNOOZE (5M)', 
-        cancelNotification: true, 
-      ),
-    ],
   );
   
   await _notifications.show(
     id: NotificationConstants.urgentId, 
-    title: "MISSION CRITICAL: Time to Move.", 
-    body: "Departure time exceeded.", 
+    title: "MISSION CRITICAL", 
+    body: "Departure time exceeded. Tap to open.", 
     notificationDetails: NotificationDetails(android: ad)
   );
 
