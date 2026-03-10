@@ -16,7 +16,7 @@ class GuardianSession {
   bool halfwayAlertSent;
   bool almostTimeAlertSent;
   int minutesToNextNudge;
-  double distanceInMeters; 
+  double? distanceInMeters; 
 
   GuardianSession({
     required this.targetDepartureTime,
@@ -33,15 +33,17 @@ class GuardianSession {
     this.halfwayAlertSent = false,
     this.almostTimeAlertSent = false,
     this.minutesToNextNudge = 30,
-    this.distanceInMeters = 0.0,
+    this.distanceInMeters,
   }){
     minutesToNextNudge = getMinutesToNextNudge();
   }
 
   String get distanceText {
-    double miles = distanceInMeters / 1609.34;
+    if (distanceInMeters == null) return "Calculating ...";
+
+    double miles = distanceInMeters! / 1609.34;
     if (miles >= 0.1) return "${miles.toStringAsFixed(1)} miles";
-    return "${(distanceInMeters * 1.09361).toStringAsFixed(0)} yards";
+    return "${(distanceInMeters! * 1.09361).toStringAsFixed(0)} yards";
   }
 
   String get countdownText {
@@ -86,6 +88,7 @@ class GuardianSession {
     'lastNudgeAlertTime': lastNudgeAlertTime?.toIso8601String(),
     'halfwayAlertSent': halfwayAlertSent,
     'almostTimeAlertSent': almostTimeAlertSent,
+    'distanceInMeters': distanceInMeters,
   };
 
   factory GuardianSession.fromMap(Map<String, dynamic> map) => GuardianSession(
@@ -102,5 +105,6 @@ class GuardianSession {
     lastNudgeAlertTime: map['lastNudgeAlertTime'] != null ? DateTime.parse(map['lastNudgeAlertTime']) : null,
     halfwayAlertSent: map['halfwayAlertSent'] ?? false,
     almostTimeAlertSent: map['almostTimeAlertSent'] ?? false,
+    distanceInMeters: map['distanceInMeters'] ?? 0.0,
   );
 }

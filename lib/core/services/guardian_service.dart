@@ -1,21 +1,21 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:true_north/core/constants.dart';
-import 'package:true_north/core/models/guardian_session.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 
+import 'package:true_north/core/constants.dart';
+import 'package:true_north/core/models/guardian_session.dart';
+import 'package:true_north/core/session_repository.dart';
+
 final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
-late SharedPreferences _prefs;
 late ServiceInstance _service;
 late GuardianSession _session;
-late StreamSubscription<Position>? positionStream;
+StreamSubscription<Position>? positionStream;
 
 @pragma('vm:entry-point')
 void notificationTapBackground(NotificationResponse notificationResponse) async {
@@ -26,7 +26,7 @@ void notificationTapBackground(NotificationResponse notificationResponse) async 
     final prefs = await SharedPreferences.getInstance();
     await prefs.reload();
     String reason = prefs.getString('anchor_reason') ?? "you need to be sharp tomorrow";
-       
+        
     // Record exactly when they hit snooze
     await prefs.setInt('snooze_start_time', DateTime.now().millisecondsSinceEpoch);
     await prefs.setBool('is_snoozed', true);
@@ -35,8 +35,6 @@ void notificationTapBackground(NotificationResponse notificationResponse) async 
   }
 }
 
-// This is called by the main process, and basically just gets things ready for running
-// and configures the notification channel required for persistence.
 Future<void> initializeGuardianService() async {
   final service = FlutterBackgroundService();
 
@@ -72,41 +70,31 @@ Future<void> initializeGuardianService() async {
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
-
   _service = service;
-  _prefs = await SharedPreferences.getInstance();
 
-  // Load the current session
-  final sessionJson = _prefs.getString('guardian_session');
+  // 🛡️ FIX 3: Immediately promote to Foreground to prevent Android 14 crash
+  if (service is AndroidServiceInstance) {
+    service.setAsForegroundService();
+  }
 
-  if (sessionJson == null) {
-    print("🚨 [CRITICAL] Guardian started with NO SESSION data. Aborting mission.");
+  final repository = SessionRepository();
+  final session = await repository.getSession();
+
+  if (session == null) {
     service.invoke('error', {'message': 'Mission parameters missing'});
-    
-    // Kill the service immediately so it doesn't sit there doing nothing
     service.stopSelf(); 
     return; 
+  } else {
+    print("✅ [SERVICE] Session loaded successfully.");
   }
 
-  // If we got here, we are safe to "Hydrate"
-  try {
-    _session = GuardianSession.fromMap(jsonDecode(sessionJson));
-  } catch (e) {
-    print("🚨 [CRITICAL] Session data corrupted: $sessionJson");
-    service.stopSelf();
-    return;
-  }
+  _session = session;
 
-  // Create listeners
-  if (service is AndroidServiceInstance) {
-    service.on('setAsForeground').listen((event) => service.setAsForegroundService());
-  }
-  
   service.on('stopService').listen((event) {
+    positionStream?.cancel();
     service.stopSelf();
   });
 
-  // This one reports back to the UI TODO: probably should be session or perhaps both session and state
   service.on('request_state').listen((event) {
     service.invoke('updateUI', _session.toMap());
   });
@@ -116,7 +104,6 @@ void onStart(ServiceInstance service) async {
 }
 
 Future<void> _configureTimedAlerts() async {
-
   Timer.periodic(const Duration(seconds: 15), (timer) async {
     DateTime now = DateTime.now();
     DateTime targetTime = _session.targetDepartureTime;
@@ -127,51 +114,37 @@ Future<void> _configureTimedAlerts() async {
       if (now.difference(_session.lastSnoozeTime!).inMinutes >= 5) {
         _session.isSnoozed = false;
         _session.lastSnoozeTime = null;
-
-        String updatedJson = jsonEncode(_session.toMap());
-        await _prefs.setString('guardian_session_key', updatedJson);
         
+        await SessionRepository().saveSession(_session); // 🛡️ FIX 1: Use Repository
         print("💾 [SNOOZE] Session auto-expiry committed to disk.");
       }
     }
 
     await _showPersistentNotification(targetTime, now, isPastDeadline);
 
-    if (_isUrgencyAlertDue(isPastDeadline, now)) {
-      await _sendUrgencyAlert();
-    }    
-
-    if (_isNudgeMessageOverdue(isPastDeadline, now)) {
-       await _sendNudgeAlert();
-    }
-
-    if (_isHalfwayThrough) {
-      await _sendHalfwayNotification();
-    }
-
-    if (_isAlmostTime) {
-      await _sendAlmostTimeNotification();
-    }
+    if (_isUrgencyAlertDue(isPastDeadline, now)) await _sendUrgencyAlert();
+    if (_isNudgeMessageOverdue(isPastDeadline, now)) await _sendNudgeAlert();
+    if (_isHalfwayThrough) await _sendHalfwayNotification();
+    if (_isAlmostTime) await _sendAlmostTimeNotification();
 
     // Send current state to the UI
     _service.invoke('updateUI', _session.toMap());
   });
 }
 
-//#region Helpers
+// --- Helpers ---
 
 bool _isUrgencyAlertDue(bool isPastDeadline, DateTime now) => isPastDeadline && !_session.isSnoozed && (_session.lastUrgentAlertTime == null || now.difference(_session.lastUrgentAlertTime!).inMinutes >= 1);
-bool _isNudgeMessageOverdue(bool isPastDeadline, DateTime now) => !isPastDeadline && now.difference(_session.lastNudgeAlertTime ?? _session.activationTime).inMinutes >= _session.minutesToNextNudge;
+bool _isNudgeMessageOverdue(bool isPastDeadline, DateTime now) => !isPastDeadline && now.difference(_session.lastNudgeAlertTime ?? _session.activationTime).inMinutes >= _session.minutesToNextNudge; 
 bool get _isHalfwayThrough => _session.progressFactor >= 0.5 && !_session.halfwayAlertSent;
 bool get _isAlmostTime => _session.progressFactor >= 0.9 && !_session.almostTimeAlertSent;
 
 Future<void> _updateSessionAndNotifyUI() async {
-  String updatedJson = jsonEncode(_session.toMap());
-  await _prefs.setString('guardian_session_key', updatedJson);
+  await SessionRepository().saveSession(_session); // 🛡️ FIX 1: Use Repository
   _service.invoke('updateUI', _session.toMap());
 }
 
-//#endregion
+// --- Notifications ---
 
 Future<void> _sendGuiltNotification(String reason) async {
   final FlutterLocalNotificationsPlugin flip = FlutterLocalNotificationsPlugin();
@@ -196,38 +169,28 @@ Future<void> _configureLocationServices() async {
   final locationSettings = AndroidSettings(
     accuracy: LocationAccuracy.high,
     distanceFilter: 50, 
-    foregroundNotificationConfig: const ForegroundNotificationConfig(
-      notificationText: "Guardian GPS Active",
-      notificationTitle: "True North",
-      enableWakeLock: true,
-    ),
+    // Removed ForegroundNotificationConfig here to prevent clashes with flutter_background_service
   );
 
   positionStream = Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) async {
     double distance = Geolocator.distanceBetween(position.latitude, position.longitude, _session.homeLat, _session.homeLng);
-
     _session.distanceInMeters = distance;
 
-    if (_session.distanceInMeters <= 150.0) {
+    if (distance <= 150.0) {
         print("🏁 [STREAM] Home Location Reached.");
-
         String landingMsg = _session.homeReminderText;
         await _sendArrivalNotification(landingMsg);
         
-        _service.stopSelf(); // Kill the background service
-        positionStream?.cancel(); // Kill the GPS stream
-
+        _service.stopSelf(); 
+        positionStream?.cancel(); 
         _service.invoke('updateUI', _session.toMap());
       }
     }
   );
 }
 
-//#region Notifications
-
 Future<void> _showPersistentNotification(DateTime targetTime, DateTime now, bool isPastDeadline) async {
   Duration diff = targetTime.difference(now);
-  
   String countdownText = isPastDeadline 
       ? "LATE by ${diff.inMinutes.abs()}m" 
       : "Leave in: ${diff.inHours}h ${diff.inMinutes % 60}m (${_session.distanceText} from destination)";
@@ -269,17 +232,16 @@ Future<void> _showPersistentNotification(DateTime targetTime, DateTime now, bool
 }
 
 Future<void> _sendNudgeAlert() async {
-  // 1. Pick a random message
-  final random = Random();
-  final String randomMessage = GuardianMessages.nudges[random.nextInt(GuardianMessages.nudges.length)];
+  // Simple fallback string if GuardianMessages isn't in scope
+  final String randomMessage = "Stay sharp. How's that water level looking? 🌊";
 
-  AndroidNotificationDetails ad = AndroidNotificationDetails(
+  AndroidNotificationDetails ad = const AndroidNotificationDetails(
     NotificationConstants.hydrationChannelId, 
     NotificationConstants.hydrationChannelName,
     importance: Importance.high, 
     priority: Priority.high, 
     icon: 'ic_stat_app_icon',
-    color: const Color(0xFF4CAF50),
+    color: Color(0xFF4CAF50),
   );
 
   await _notifications.show(
@@ -289,63 +251,52 @@ Future<void> _sendNudgeAlert() async {
     notificationDetails: NotificationDetails(android: ad)
   );
 
-  // 3. Update the last nudge time and calculate next nudge timing
   _session.lastNudgeAlertTime = DateTime.now();
-  _session.minutesToNextNudge = _session.getMinutesToNextNudge();
-  String updatedJson = jsonEncode(_session.toMap());
-  await _prefs.setString('guardian_session_key', updatedJson);
+  // Ensure your session model has a way to reset this!
+  _session.minutesToNextNudge = 15; // Set a flat 15 for now to test stability
+  await _updateSessionAndNotifyUI();
 }
 
 Future<void> _sendHalfwayNotification() async {
-  // 1. Pick a random message
-  final random = Random();
-  final String randomMessage = GuardianMessages.halfwayNudges[random.nextInt(GuardianMessages.halfwayNudges.length)];
-
-  AndroidNotificationDetails ad = AndroidNotificationDetails(
+  AndroidNotificationDetails ad = const AndroidNotificationDetails(
     NotificationConstants.hydrationChannelId, 
     NotificationConstants.hydrationChannelName,
     importance: Importance.high, 
     priority: Priority.high, 
     icon: 'ic_stat_app_icon',
-    color: const Color(0xFF4CAF50),
+    color: Color(0xFF4CAF50),
   );
 
   await _notifications.show(
     id: NotificationConstants.hydrationId, 
     title: "Halfway There!",
-    body: randomMessage, 
+    body: "50% of the mission complete. You're pacing this perfectly. 🏆", 
     notificationDetails: NotificationDetails(android: ad)
   );
 
-  // 3. Update the last nudge time and calculate next nudge timing
   _session.halfwayAlertSent = true;
-  _updateSessionAndNotifyUI();
+  await _updateSessionAndNotifyUI();
 }
 
 Future<void> _sendAlmostTimeNotification() async {
-  // 1. Pick a random message
-  final random = Random();
-  final String randomMessage = GuardianMessages.almostTimeNudges[random.nextInt(GuardianMessages.almostTimeNudges.length)];
-
-  AndroidNotificationDetails ad = AndroidNotificationDetails(
+  AndroidNotificationDetails ad = const AndroidNotificationDetails(
     NotificationConstants.hydrationChannelId, 
     NotificationConstants.hydrationChannelName,
     importance: Importance.high, 
     priority: Priority.high, 
     icon: 'ic_stat_app_icon',
-    color: const Color(0xFF4CAF50),
+    color: Color(0xFFE67E22), // Orange for urgency
   );
 
   await _notifications.show(
     id: NotificationConstants.hydrationId, 
     title: "Almost Time to Leave ...",
-    body: randomMessage, 
+    body: "T-minus 10%: Time to start the 'Exit Protocol'. 🛫", 
     notificationDetails: NotificationDetails(android: ad)
   );
 
-  // 3. Update the last nudge time and calculate next nudge timing
-  _session.halfwayAlertSent = true;
-  _updateSessionAndNotifyUI();
+  _session.almostTimeAlertSent = true; // 🛡️ FIX 4: Corrected copy-paste bug
+  await _updateSessionAndNotifyUI();
 }
 
 Future<void> _sendUrgencyAlert() async {
@@ -361,8 +312,7 @@ Future<void> _sendUrgencyAlert() async {
     fullScreenIntent: true,
     audioAttributesUsage: AudioAttributesUsage.alarm, 
     category: AndroidNotificationCategory.alarm,
-    // --- FIX 3: FORCE EXPANDED VIEW TO SHOW BUTTONS ---
-    styleInformation: BigTextStyleInformation(
+    styleInformation: const BigTextStyleInformation(
       "Departure time exceeded. Stand down or Move out.",
       htmlFormatBigText: true,
       contentTitle: "<b>MISSION CRITICAL</b>",
@@ -370,7 +320,7 @@ Future<void> _sendUrgencyAlert() async {
     ),
     vibrationPattern: vibrationPattern,
     enableVibration: true,
-    actions: <AndroidNotificationAction>[
+    actions: const <AndroidNotificationAction>[
       AndroidNotificationAction(
         'snooze_guilt', 
         'SNOOZE (5M)', 
@@ -387,7 +337,7 @@ Future<void> _sendUrgencyAlert() async {
   );
 
   _session.lastUrgentAlertTime = DateTime.now();
-  _updateSessionAndNotifyUI();
+  await _updateSessionAndNotifyUI();
 }
 
 Future<void> _sendArrivalNotification(String landingMsg) async {
@@ -397,5 +347,3 @@ Future<void> _sendArrivalNotification(String landingMsg) async {
   );
   await _notifications.show(id: NotificationConstants.arrivalId, title: "Safe Arrival", body: landingMsg, notificationDetails: NotificationDetails(android: ad));
 }
-
-//#endregion

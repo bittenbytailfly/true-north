@@ -1,12 +1,13 @@
 import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'package:true_north/core/models/guardian_session.dart';
+import 'package:true_north/core/session_repository.dart';
 
 class GuardianScreen extends StatefulWidget {
   const GuardianScreen({super.key});
@@ -48,10 +49,21 @@ class _GuardianScreenState extends State<GuardianScreen> {
     // 2. Listen for real-time updates
     service.on('updateUI').listen((event) {
       if (event != null && mounted) {
-        setState(() {
-          _guardianSession = GuardianSession.fromMap(event);
-          isGuardianActive = true;
-        });
+        print("📡 [UI] Received update from service!"); // <-- Add this to prove it's alive
+
+        try {
+          // SAFE CAST: Forces the dynamic map into the exact format fromMap needs
+          final safeMap = Map<String, dynamic>.from(event);
+          
+print(event);
+
+          setState(() {
+            _guardianSession = GuardianSession.fromMap(safeMap);
+            isGuardianActive = true;
+          });
+        } catch (e) {
+          print("🚨 [UI] Failed to parse session data: $e"); // <-- Catches any missing keys
+        }
       }
     });
   }
@@ -105,10 +117,10 @@ class _GuardianScreenState extends State<GuardianScreen> {
   Future<bool> _isPostcodeValid(String address) async {
     String cleanAddress = address.trim().toUpperCase();
 
-    // 1. Strict RegEx check for UK Postcodes (e.g. SW1A 1AA or B689AD)
+    // 1. Strict RegEx check for UK Postcodes
     final RegExp ukPostcodeRegex = RegExp(r"^[A-Z]{1,2}\d[A-Z\d]? ?\d[A-Z]{2}$");
     if (!ukPostcodeRegex.hasMatch(cleanAddress)) {
-      return false; // Automatically fails gibberish without checking the internet
+      return false; 
     }
 
     // 2. Network Geocoding Check
@@ -133,10 +145,9 @@ class _GuardianScreenState extends State<GuardianScreen> {
   }
 
   void _activateGuardian() async {
-    final prefs = await SharedPreferences.getInstance();
     final now = DateTime.now();
     
-    // 1. Calculate the target time (your logic is solid here)
+    // 1. Calculate the target time
     DateTime targetDateTime = DateTime(
       now.year, now.month, now.day, 
       _leaveTime.hour, _leaveTime.minute
@@ -146,7 +157,6 @@ class _GuardianScreenState extends State<GuardianScreen> {
     }
 
     // 2. Create the "Source of Truth" Object
-    // We use your GuardianSession model to hold everything in one container
     final session = GuardianSession(
       activationTime: now,
       targetDepartureTime: targetDateTime,
@@ -156,19 +166,32 @@ class _GuardianScreenState extends State<GuardianScreen> {
       homeReminderText: _landingController.text.isNotEmpty ? _landingController.text : "Welcome home. The Guardian is standing down."
     );
 
-    // 3. Save as ONE single JSON string
-    // This is the "Briefing Document" we talked about
-    await prefs.setString('guardian_session', jsonEncode(session.toMap()));
+    // 3. Save to Repository
+    await SessionRepository().saveSession(session);
 
     // 4. Update UI State & Close Panel
     if (!context.mounted) return;
     Navigator.pop(context); 
-    setState(() => isGuardianActive = true);
+    setState(() {
+      isGuardianActive = true;
+      _guardianSession = session;
+    });
 
     // 5. Start the Engine
     final service = FlutterBackgroundService();
     await service.startService();
     service.invoke('setAsForeground');
+  }
+
+  Future<void> _deactivateGuardian() async {
+    setState(() {
+      isGuardianActive = false;
+      _guardianSession = null;
+    });
+    
+    // Clear data so it doesn't resume on next app open
+    await SessionRepository().clearSession();
+    FlutterBackgroundService().invoke('stopService');
   }
 
   Future<void> _showBackgroundRationaleDialog() async {
@@ -209,7 +232,6 @@ class _GuardianScreenState extends State<GuardianScreen> {
   }
 
   void _showPreFlightChecklist() {
-    // 1. Define the error message variable outside the builder
     String errorMessage = ''; 
 
     showModalBottomSheet(
@@ -262,7 +284,6 @@ class _GuardianScreenState extends State<GuardianScreen> {
                   
                   const SizedBox(height: 20),
 
-                  // 2. THE INLINE ERROR DISPLAY
                   if (errorMessage.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 15),
@@ -286,7 +307,6 @@ class _GuardianScreenState extends State<GuardianScreen> {
                     child: ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFD700), foregroundColor: Colors.black),
                       onPressed: _isValidating ? null : () async {
-                        // Clear any previous errors when they click the button again
                         setSheetState(() => errorMessage = '');
                         
                         String cleanInput = _homeController.text.trim();
@@ -306,7 +326,6 @@ class _GuardianScreenState extends State<GuardianScreen> {
                           return;
                         }
 
-                        // Permissions & Guardian Start
                         if (await Permission.notification.isDenied) await Permission.notification.request();
                         LocationPermission forePermission = await Geolocator.checkPermission();
                         if (forePermission == LocationPermission.denied) forePermission = await Geolocator.requestPermission();
@@ -343,6 +362,55 @@ class _GuardianScreenState extends State<GuardianScreen> {
     );
   }
 
+  void _showStandDownDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1E1E3F),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 28),
+              SizedBox(width: 10),
+              Text("Stand Down?", style: TextStyle(color: Colors.white)),
+            ],
+          ),
+          content: RichText(
+            text: TextSpan(
+              style: const TextStyle(color: Colors.white70, fontSize: 16, height: 1.4),
+              children: [
+                const TextSpan(text: "You are about to deactivate the Guardian.\n\nBut remember: "),
+                TextSpan(
+                  text: '"${_guardianSession?.anchorReason ?? "you need to be sharp tomorrow"}"\n\n',
+                  style: const TextStyle(color: Color(0xFFFFD700), fontWeight: FontWeight.bold, fontStyle: FontStyle.italic),
+                ),
+                const TextSpan(text: "Are you sure you want to switch this off?"),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext), 
+              child: const Text("KEEP ACTIVE", style: TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red.withOpacity(0.8),
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () {
+                Navigator.pop(dialogContext);
+                _deactivateGuardian();
+              },
+              child: const Text("DEACTIVATE"),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -359,6 +427,7 @@ class _GuardianScreenState extends State<GuardianScreen> {
           children: [
             const Text('TRUE NORTH', style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900, letterSpacing: 8, color: Colors.white70)),
             const SizedBox(height: 60),
+            
             GestureDetector(
               onTap: () {
                 if (isGuardianActive) {
@@ -369,81 +438,69 @@ class _GuardianScreenState extends State<GuardianScreen> {
               },
               onLongPress: () async {
                 if (isGuardianActive) {
-                  final prefs = await SharedPreferences.getInstance();
-                  String reason = prefs.getString('anchor_reason') ?? "you need to be sharp tomorrow";
-
-                  if (!context.mounted) return;
-
-                  showDialog(
-                    context: context,
-                    builder: (BuildContext dialogContext) {
-                      return AlertDialog(
-                        backgroundColor: const Color(0xFF1E1E3F),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                        title: const Row(
-                          children: [
-                            Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 28),
-                            SizedBox(width: 10),
-                            Text("Stand Down?", style: TextStyle(color: Colors.white)),
-                          ],
-                        ),
-                        content: RichText(
-                          text: TextSpan(
-                            style: const TextStyle(color: Colors.white70, fontSize: 16, height: 1.4),
-                            children: [
-                              const TextSpan(text: "You are about to deactivate the Guardian.\n\nBut remember: "),
-                              TextSpan(
-                                text: '"$reason"\n\n',
-                                style: const TextStyle(color: Color(0xFFFFD700), fontWeight: FontWeight.bold, fontStyle: FontStyle.italic),
-                              ),
-                              const TextSpan(text: "Are you sure you want to switch this off?"),
-                            ],
-                          ),
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(dialogContext), 
-                            child: const Text("KEEP ACTIVE", style: TextStyle(color: Colors.white54)),
-                          ),
-                          ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.red.withOpacity(0.8),
-                              foregroundColor: Colors.white,
-                            ),
-                            onPressed: () {
-                              setState(() => isGuardianActive = false);
-                              FlutterBackgroundService().invoke('stopService');
-                              Navigator.pop(dialogContext);
-                            },
-                            child: const Text("DEACTIVATE"),
-                          ),
-                        ],
-                      );
-                    },
-                  );
+                  _showStandDownDialog();
                 }
               },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 500),
-                width: 200, height: 200,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(color: isGuardianActive ? const Color(0xFFFFD700) : Colors.white10, width: 2),
-                  boxShadow: isGuardianActive ? [BoxShadow(color: const Color(0xFFFFD700).withOpacity(0.2), blurRadius: 40, spreadRadius: 5)] : [],
-                ),
-                child: Icon(Icons.shield_outlined, size: 80, color: isGuardianActive ? const Color(0xFFFFD700) : Colors.white24),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  // The Outer Progress Ring (Only shows when active)
+                  if (isGuardianActive && _guardianSession != null)
+                    SizedBox(
+                      width: 240,
+                      height: 240,
+                      child: CircularProgressIndicator(
+                        value: _guardianSession!.progressFactor,
+                        strokeWidth: 4,
+                        backgroundColor: Colors.white10,
+                        valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFFFD700)),
+                      ),
+                    ),
+                  
+                  // The Main Shield Button
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 500),
+                    width: 200, height: 200,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isGuardianActive ? const Color(0xFF1E1E3F) : Colors.transparent,
+                      border: Border.all(color: isGuardianActive ? const Color(0xFFFFD700) : Colors.white10, width: 2),
+                      boxShadow: isGuardianActive ? [BoxShadow(color: const Color(0xFFFFD700).withOpacity(0.1), blurRadius: 40, spreadRadius: 5)] : [],
+                    ),
+                    child: Icon(
+                      isGuardianActive ? Icons.shield : Icons.shield_outlined, 
+                      size: 80, 
+                      color: isGuardianActive ? const Color(0xFFFFD700) : Colors.white24
+                    ),
+                  ),
+                ],
               ),
             ),
+
             const SizedBox(height: 40),
-            if (isGuardianActive && _guardianSession != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Text(
-                  _guardianSession!.countdownText,
-                  style: const TextStyle(color: Color(0xFFFFD700), fontSize: 16, fontWeight: FontWeight.w500),
-                ),
+
+            // Tactical Readout
+            if (isGuardianActive && _guardianSession != null) ...[
+              Text(
+                _guardianSession!.countdownText,
+                style: const TextStyle(color: Color(0xFFFFD700), fontSize: 42, fontWeight: FontWeight.w900, letterSpacing: 2),
               ),
-            Text(isGuardianActive ? 'GUARDIAN ACTIVE' : 'TAP TO CONFIGURE', style: TextStyle(color: isGuardianActive ? const Color(0xFFFFD700) : Colors.white54, fontWeight: FontWeight.bold, letterSpacing: 2)),
+              const SizedBox(height: 8),
+              Text(
+                "DISTANCE TO HOME: ${_guardianSession!.distanceText.toUpperCase()}",
+                style: const TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.5),
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                'LONG PRESS SHIELD TO STAND DOWN',
+                style: TextStyle(color: Colors.white24, fontSize: 10, letterSpacing: 1),
+              ),
+            ] else ...[
+              const Text(
+                'TAP TO CONFIGURE GUARDIAN',
+                style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold, letterSpacing: 2),
+              ),
+            ],
           ],
         ),
       ),
