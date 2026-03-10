@@ -4,7 +4,6 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:geocoding/geocoding.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:true_north/core/models/guardian_session.dart';
 import 'package:true_north/core/session_repository.dart';
@@ -18,9 +17,9 @@ class GuardianScreen extends StatefulWidget {
 
 class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProviderStateMixin {
   // --- STATE ---
-  bool isGuardianActive = false;
   bool _isValidating = false;
   GuardianSession? _guardianSession;
+  bool get isGuardianActive => _guardianSession != null;
   Timer? _uiClockTimer;
 
   // --- ANIMATION CONTROLLER ---
@@ -50,11 +49,6 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     _glowOpacity = Tween<double>(begin: 0.05, end: 0.30).animate(
       CurvedAnimation(parent: _glowController, curve: Curves.easeInOut),
     );
-
-    // 2. Safe check for arrival status
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _checkArrivalStatus();
-    });
 
     // 3. DEFER EVERYTHING ELSE UNTIL THE FIRST FRAME IS DRAWN
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -89,8 +83,6 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     if (await service.isRunning()) {
       if (mounted) {
         setState(() {
-          isGuardianActive = true;
-          // Ensure it doesn't try to animate if we are in the background
           if (!_glowController.isAnimating) _glowController.repeat(reverse: true); 
         });
       }
@@ -104,7 +96,6 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
           if (mounted) {
             setState(() {
               _guardianSession = GuardianSession.fromMap(safeMap);
-              isGuardianActive = true;
               if (!_glowController.isAnimating) _glowController.repeat(reverse: true);
             });
           }
@@ -127,43 +118,6 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     _anchorController.dispose();
     _landingController.dispose();
     super.dispose();
-  }
-
-  Future<void> _checkArrivalStatus() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (prefs.getBool('show_arrival_popup') ?? false) {
-      String message = prefs.getString('landing_message') ?? "You made it home.";
-      if (context.mounted) _showArrivalDialog(context, message);
-      await prefs.setBool('show_arrival_popup', false); 
-    }
-  }
-
-  void _showArrivalDialog(BuildContext context, String landingMessage) {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1E3F), 
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Icon(Icons.check_circle_outline, color: Color(0xFFFFD700), size: 50),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text("Mission Accomplished", style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 10),
-            Text(landingMessage, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)),
-          ],
-        ),
-        actions: [
-          Center(
-            child: TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("STAND DOWN", style: TextStyle(color: Color(0xFFFFD700), fontWeight: FontWeight.bold)),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   Future<bool> _isPostcodeValid(String address) async {
@@ -216,7 +170,6 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     if (!context.mounted) return;
     Navigator.pop(context); 
     setState(() {
-      isGuardianActive = true;
       _guardianSession = session;
       _glowController.repeat(reverse: true); 
     });
@@ -228,7 +181,6 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
 
   Future<void> _deactivateGuardian() async {
     setState(() {
-      isGuardianActive = false;
       _guardianSession = null;
       _glowController.reset(); 
     });
