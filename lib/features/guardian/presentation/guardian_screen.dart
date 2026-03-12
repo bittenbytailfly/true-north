@@ -292,6 +292,28 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     );
   }
 
+  Future<void> _showBatteryRationaleDialog() async {
+    return showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E3F),
+        title: const Text('Unrestricted Power', style: TextStyle(color: Colors.white)),
+        content: const Text(
+            'To prevent Android from killing the Guardian while your phone is locked in your pocket, '
+            'you must allow the app to run without battery restrictions.\n\n'
+            'Please select "Allow" or "Unrestricted" on the next screen.',
+            style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('UNDERSTOOD', style: TextStyle(color: Color(0xFFFFD700))),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildCustomField({required TextEditingController controller, 
     required String label, 
     required String hint, 
@@ -425,26 +447,43 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
                           return;
                         }
 
+                        // 1. Ask for Notifications & Foreground Location
                         if (await Permission.notification.isDenied) await Permission.notification.request();
-                        LocationPermission forePermission = await Geolocator.checkPermission();
-                        if (forePermission == LocationPermission.denied) forePermission = await Geolocator.requestPermission();
-                        var bgStatus = await Permission.locationAlways.status;
                         
-                        if (bgStatus.isGranted) {
+                        LocationPermission forePermission = await Geolocator.checkPermission();
+                        if (forePermission == LocationPermission.denied) {
+                          forePermission = await Geolocator.requestPermission();
+                        }
+                        
+                        // 2. Ask for Background Location
+                        var bgStatus = await Permission.locationAlways.status;
+                        if (!bgStatus.isGranted) {
+                          await _showBackgroundRationaleDialog();
+                          bgStatus = await Permission.locationAlways.request();
+                          if (bgStatus.isPermanentlyDenied) {
+                            await openAppSettings();
+                            return; // Stop the sequence if they refuse
+                          }
+                        }
+                        
+                        // 3. 🛡️ THE NEW CHECK: Ask for Battery Exemption
+                        var batteryStatus = await Permission.ignoreBatteryOptimizations.status;
+                        if (!batteryStatus.isGranted) {
+                          await _showBatteryRationaleDialog();
+                          batteryStatus = await Permission.ignoreBatteryOptimizations.request();
+                        }
+
+                        // 4. Final Launch Sequence
+                        if (bgStatus.isGranted && batteryStatus.isGranted) {
                           bool isLocationServiceEnabled = await Geolocator.isLocationServiceEnabled();
                           if (!isLocationServiceEnabled) {
                             setSheetState(() => errorMessage = 'Please turn on your phone\'s Location/GPS.');
                             return;
                           }
-                          _activateGuardian();
+                          _activateGuardian(); // All systems go!
                         } else {
-                          await _showBackgroundRationaleDialog();
-                          final result = await Permission.locationAlways.request();
-                          if (result.isGranted) {
-                            _activateGuardian();
-                          } else if (result.isPermanentlyDenied) {
-                            await openAppSettings();
-                          }
+                          // They denied a crucial permission
+                          setSheetState(() => errorMessage = 'The Guardian requires full background and battery permissions to protect you.');
                         }
                       },
                       child: _isValidating 
