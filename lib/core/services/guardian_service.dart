@@ -211,7 +211,7 @@ Future<void> _showPersistentNotification(DateTime targetTime, DateTime now, bool
 }
 
 Future<void> _sendNudgeAlert() async {
-  final String randomMessage = "Stay sharp. How's that water level looking? 🌊";
+  final String randomMessage = (GuardianMessages.nudges..shuffle()).first;
 
   AndroidNotificationDetails ad = const AndroidNotificationDetails(
     NotificationConstants.hydrationChannelId, 
@@ -235,6 +235,8 @@ Future<void> _sendNudgeAlert() async {
 }
 
 Future<void> _sendHalfwayNotification() async {
+  final String randomMessage = (GuardianMessages.halfwayNudges..shuffle()).first;
+
   AndroidNotificationDetails ad = const AndroidNotificationDetails(
     NotificationConstants.hydrationChannelId, 
     NotificationConstants.hydrationChannelName,
@@ -247,7 +249,7 @@ Future<void> _sendHalfwayNotification() async {
   await _notifications.show(
     id: NotificationConstants.hydrationId, 
     title: "Halfway There!",
-    body: "50% of the mission complete. You're pacing this perfectly. 🏆", 
+    body: randomMessage, 
     notificationDetails: NotificationDetails(android: ad)
   );
 
@@ -256,6 +258,8 @@ Future<void> _sendHalfwayNotification() async {
 }
 
 Future<void> _sendAlmostTimeNotification() async {
+  final String randomMessage = (GuardianMessages.almostTimeNudges..shuffle()).first;
+
   AndroidNotificationDetails ad = const AndroidNotificationDetails(
     NotificationConstants.hydrationChannelId, 
     NotificationConstants.hydrationChannelName,
@@ -268,7 +272,7 @@ Future<void> _sendAlmostTimeNotification() async {
   await _notifications.show(
     id: NotificationConstants.hydrationId, 
     title: "Almost Time to Leave ...",
-    body: "T-minus 10%: Time to start the 'Exit Protocol'. 🛫", 
+    body: randomMessage, 
     notificationDetails: NotificationDetails(android: ad)
   );
 
@@ -277,7 +281,13 @@ Future<void> _sendAlmostTimeNotification() async {
 }
 
 Future<void> _sendUrgencyAlert() async {
-  final Int64List vibrationPattern = Int64List.fromList([0, 100, 100, 100, 100, 100, 100, 100, 100, 500, 100, 500, 100, 500]); // Vibrate for 100ms, pause for 100ms, repeated 5 times
+  final Int64List vibrationPattern = Int64List.fromList([
+    0, 200,    // Initial wake-up pulse
+    200, 200,  // Pause, pulse
+    200, 200,  // Pause, pulse
+    400, 600,  // Longer pause, then the heavy "reminder" pulse
+    200, 600,
+    200, 600]); // Vibrate for 100ms, pause for 100ms, repeated 5 times
   
   // 🛡️ REFACTOR: Removed fullScreenIntent and actions
   AndroidNotificationDetails ad = AndroidNotificationDetails(
@@ -289,8 +299,8 @@ Future<void> _sendUrgencyAlert() async {
     autoCancel: false,
     audioAttributesUsage: AudioAttributesUsage.alarm, 
     category: AndroidNotificationCategory.alarm,
-    styleInformation: const BigTextStyleInformation(
-      "Departure time exceeded. Tap to open Guardian and stand down or snooze.",
+    styleInformation: BigTextStyleInformation(
+      "Departure time exceeded. ${_session.anchorReason}",
       htmlFormatBigText: true,
       contentTitle: "<b>MISSION CRITICAL</b>",
       htmlFormatContentTitle: true,
