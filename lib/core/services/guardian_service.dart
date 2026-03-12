@@ -162,7 +162,7 @@ Future<void> _configureLocationServices() async {
         
         _service.stopSelf(); 
         positionStream?.cancel(); 
-        _service.invoke('updateUI', _session.toMap());
+        _service.invoke('updateUI', null);
       }
     }
   );

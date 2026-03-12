@@ -145,8 +145,23 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
     final service = FlutterBackgroundService();
 
     // 🛡️ FIX 1: Set up the listener FIRST so we don't miss the immediate reply
-    service.on('updateUI').listen((event) {
-      if (event != null && mounted) {
+    service.on('updateUI').listen((event) async { 
+      if (mounted) {
+        
+        if (event == null) {
+          // 🛡️ FIX 2: Do the heavy lifting (async) OUTSIDE of setState
+          await SessionRepository().clearSession();
+          
+          if (mounted) {
+            // 🛡️ FIX 3: Keep setState strictly synchronous
+            setState(() {
+              _guardianSession = null;
+              _glowController.reset(); 
+            });
+          }
+          return;
+        }
+
         try {
           final safeMap = Map<String, dynamic>.from(event);
           setState(() {
@@ -154,7 +169,6 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
             if (!_glowController.isAnimating) _glowController.repeat(reverse: true);
           });
         } catch (e, stacktrace) {
-          // 🛡️ FIX 2: Print the stack trace so we can see EXACTLY what data type is failing
           print("🚨 [UI] Failed to parse session data: $e"); 
           print(stacktrace);
         }
