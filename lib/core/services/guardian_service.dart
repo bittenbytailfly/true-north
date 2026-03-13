@@ -211,7 +211,8 @@ Future<void> _showPersistentNotification(DateTime targetTime, DateTime now, bool
 }
 
 Future<void> _sendNudgeAlert() async {
-  final String randomMessage = (GuardianMessages.nudges..shuffle()).first;
+  final random = Random();
+  String alert = GuardianMessages.nudges[random.nextInt(GuardianMessages.nudges.length)];
 
   AndroidNotificationDetails ad = const AndroidNotificationDetails(
     NotificationConstants.hydrationChannelId, 
@@ -225,7 +226,7 @@ Future<void> _sendNudgeAlert() async {
   await _notifications.show(
     id: NotificationConstants.hydrationId, 
     title: "Checking in ...",
-    body: randomMessage, 
+    body: alert, 
     notificationDetails: NotificationDetails(android: ad)
   );
 
@@ -235,7 +236,8 @@ Future<void> _sendNudgeAlert() async {
 }
 
 Future<void> _sendHalfwayNotification() async {
-  final String randomMessage = (GuardianMessages.halfwayNudges..shuffle()).first;
+  final random = Random();
+  String alert = GuardianMessages.halfwayNudges[random.nextInt(GuardianMessages.halfwayNudges.length)];
 
   AndroidNotificationDetails ad = const AndroidNotificationDetails(
     NotificationConstants.hydrationChannelId, 
@@ -249,7 +251,7 @@ Future<void> _sendHalfwayNotification() async {
   await _notifications.show(
     id: NotificationConstants.hydrationId, 
     title: "Halfway There!",
-    body: randomMessage, 
+    body: alert, 
     notificationDetails: NotificationDetails(android: ad)
   );
 
@@ -258,7 +260,8 @@ Future<void> _sendHalfwayNotification() async {
 }
 
 Future<void> _sendAlmostTimeNotification() async {
-  final String randomMessage = (GuardianMessages.almostTimeNudges..shuffle()).first;
+  final random = Random();
+  String alert = GuardianMessages.almostTimeNudges[random.nextInt(GuardianMessages.almostTimeNudges.length)];
 
   AndroidNotificationDetails ad = const AndroidNotificationDetails(
     NotificationConstants.hydrationChannelId, 
@@ -272,7 +275,7 @@ Future<void> _sendAlmostTimeNotification() async {
   await _notifications.show(
     id: NotificationConstants.hydrationId, 
     title: "Almost Time to Leave ...",
-    body: randomMessage, 
+    body: alert, 
     notificationDetails: NotificationDetails(android: ad)
   );
 

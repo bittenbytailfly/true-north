@@ -1,4 +1,4 @@
-package com.example.true_north
+package com.bittenbytailfly.truenorth
 
 import io.flutter.embedding.android.FlutterActivity
 
