@@ -199,11 +199,11 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
 
   Future<bool> _isPostcodeValid(String address) async {
     String cleanAddress = address.trim().toUpperCase();
-    final RegExp ukPostcodeRegex = RegExp(r"^[A-Z]{1,2}\d[A-Z\d]? ?\d[A-Z]{2}$");
+    final RegExp ukPostcodeRegex = RegExp(r"^\d{4}-\d{3}$");
     if (!ukPostcodeRegex.hasMatch(cleanAddress)) return false; 
 
     try {
-      List<Location> locations = await locationFromAddress("$cleanAddress, UK")
+      List<Location> locations = await locationFromAddress("$cleanAddress, PT")
           .timeout(const Duration(seconds: 5));
           
       if (locations.isNotEmpty) {
@@ -360,7 +360,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
                   const Text('GOOD INTENTIONS', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFFFFD700), letterSpacing: 2)),
                   const SizedBox(height: 20),
                   
-                  _buildCustomField(controller: _homeController, label: 'Home Postcode', hint: 'e.g. SW1A 1AA', icon: Icons.home, textCapitalization: TextCapitalization.characters),
+                  _buildCustomField(controller: _homeController, label: 'Home Postcode', hint: 'e.g. 1000-001', icon: Icons.home, textCapitalization: TextCapitalization.characters),
                   const SizedBox(height: 10),
                   
                   ListTile(
@@ -443,7 +443,7 @@ class _GuardianScreenState extends State<GuardianScreen> with SingleTickerProvid
                         setSheetState(() => _isValidating = false);
 
                         if (!isValid) {
-                          setSheetState(() => errorMessage = 'Invalid UK Postcode format or location not found.');
+                          setSheetState(() => errorMessage = 'Invalid Postcode format or location not found.');
                           return;
                         }
 
